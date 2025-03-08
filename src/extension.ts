@@ -62,7 +62,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 
 		if (!client || !client.isRunning()) {
-			vscode.window.showErrorMessage('El servidor de lenguaje JSP no está activo.');
+			vscode.window.showErrorMessage('JSP language server is not active.');
 			return;
 		}
 
@@ -97,11 +97,11 @@ export async function activate(context: vscode.ExtensionContext) {
 				// Abrir el archivo y mostrar la definición
 				await vscode.window.showTextDocument(uri, { selection: range });
 			} else {
-				vscode.window.showInformationMessage('No se encontró la definición de la clase Java.');
+				vscode.window.showInformationMessage('Java class definition not found.');
 			}
 		} catch (error) {
-			console.error('Error en Go to Definition:', error);
-			vscode.window.showErrorMessage(`Error al buscar la definición: ${error instanceof Error ? error.message : String(error)}`);
+			console.error('Error in Go to Definition:', error);
+			vscode.window.showErrorMessage(`Error searching for definition: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	});
 

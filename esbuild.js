@@ -35,7 +35,7 @@ const commonConfig = {
 };
 
 async function main() {
-	// Configuración para la extensión
+	// Configuration for the extension
 	const extensionCtx = await esbuild.context({
 		...commonConfig,
 		entryPoints: ['src/extension.ts'],
@@ -43,16 +43,16 @@ async function main() {
 		external: ['vscode'],
 	});
 
-	// Configuración para el servidor
+	// Configuration for the server
 	const serverCtx = await esbuild.context({
 		...commonConfig,
 		entryPoints: ['src/server.ts'],
 		outfile: 'dist/server.js',
 		bundle: true,
 		platform: 'node',
-		// Solo excluir vscode, incluir todo lo demás
+		// Only exclude vscode, include everything else
 		external: ['vscode'],
-		// Asegurarse de que las dependencias se incluyan
+		// Make sure dependencies are included
 		nodePaths: ['./node_modules'],
 		mainFields: ['module', 'main'],
 		resolveExtensions: ['.ts', '.js']

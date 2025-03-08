@@ -24,16 +24,16 @@ import {
     CompletionConfiguration
 } from 'vscode-html-languageservice';
 
-// Crear una conexión para el servidor
+// Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
 
-// Crear un gestor de documentos
+// Create a document manager
 const documents: TextDocuments<TextDocumentContent> = new TextDocuments(TextDocumentContent);
 
-// Crear el servicio de lenguaje HTML
+// Create the HTML language service
 const htmlLanguageService: HTMLLanguageService = getHTMLLanguageService();
 
-// Almacenar las rutas base del proyecto
+// Store project base paths
 let workspaceFolders: string[] = [];
 let javaSourcePaths: string[] = [];
 
@@ -41,21 +41,21 @@ connection.onInitialize((params: InitializeParams) => {
     const result: InitializeResult = {
         capabilities: {
             textDocumentSync: TextDocumentSyncKind.Incremental,
-            // Habilitar el autocompletado y el cierre automático de etiquetas
+            // Enable autocompletion and automatic tag closure
             completionProvider: {
                 resolveProvider: true,
                 triggerCharacters: ['@', '<', ' ', '"', ':', '/', '.', '>', '/']
             },
-            // Habilitar Go to Definition
+            // Enable Go to Definition
             definitionProvider: true
         }
     };
 
-    // Guardar las rutas del workspace
+    // Save workspace paths
     if (params.workspaceFolders) {
         workspaceFolders = params.workspaceFolders.map(folder => folder.uri.replace('file://', ''));
         
-        // Buscar directorios src/main/java comunes en proyectos Java
+        // Search for common src/main/java directories in Java projects
         workspaceFolders.forEach(folder => {
             const javaSrcPath = path.join(folder, 'src', 'main', 'java');
             if (fs.existsSync(javaSrcPath)) {
@@ -67,7 +67,7 @@ connection.onInitialize((params: InitializeParams) => {
     return result;
 });
 
-// Función recursiva para buscar archivos
+// Recursive function to find files
 function findFileRecursive(dir: string, fileName: string): string | null {
     if (!fs.existsSync(dir)) {
         return null;
@@ -91,9 +91,9 @@ function findFileRecursive(dir: string, fileName: string): string | null {
     return null;
 }
 
-// Función para encontrar la definición de una clase Java
+// Function to find Java class definition
 async function findJavaDefinition(className: string): Promise<Location | null> {
-    // Convertir el nombre de la clase a ruta de archivo
+    // Convert class name to file path
     const classFile = className.split('.').pop() + '.java';
     const packagePath = className.split('.').slice(0, -1).join('/');
     
@@ -102,11 +102,11 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
         const filePath = findFileRecursive(searchPath, classFile);
         
         if (filePath) {
-            // Leer el archivo y encontrar la definición de la clase
+            // Read the file and find the class definition
             const content = fs.readFileSync(filePath, 'utf-8');
             const lines = content.split('\n');
             
-            // Buscar la línea que define la clase
+            // Search for the line that defines the class
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 const classMatch = line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`));
@@ -125,7 +125,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
     return null;
 }
 
-// Manejar las solicitudes de Go to Definition
+// Handle Go to Definition requests
 connection.onDefinition(
     async (params: TextDocumentPositionParams): Promise<Definition | null> => {
         const document = documents.get(params.textDocument.uri);
@@ -137,14 +137,14 @@ connection.onDefinition(
         const position = params.position;
         const offset = document.offsetAt(position);
 
-        // Buscar la palabra en la posición actual
+        // Search for the word at the current position
         const wordRange = {
             start: Math.max(0, offset - 50),
             end: Math.min(text.length, offset + 50)
         };
         const textAround = text.substring(wordRange.start, wordRange.end);
         
-        // Intentar encontrar un nombre de clase Java
+        // Try to find a Java class name
         const beforeCursor = textAround.substring(0, offset - wordRange.start);
         const afterCursor = textAround.substring(offset - wordRange.start);
         
@@ -152,22 +152,22 @@ connection.onDefinition(
         const wordAfter = afterCursor.match(/^[A-Za-z0-9_.]+/)?.[0] || '';
         const word = wordBefore + wordAfter;
 
-        // Verificar si parece un nombre de clase Java
+        // Verify if it looks like a Java class name
         if (/^[A-Z][A-Za-z0-9_.]*[A-Za-z0-9]$/.test(word)) {
-            // Buscar en las importaciones
+            // Search for imports
             const importMatch = text.match(new RegExp(`import\\s+([^;]*\\.${word.split('.').pop()});`));
             if (importMatch) {
                 return await findJavaDefinition(importMatch[1]);
             }
             
-            // Si no hay importación explícita, buscar en el mismo paquete
+            // If there's no explicit import, search in the same package
             const packageMatch = text.match(/package\s+([^;]+);/);
             if (packageMatch) {
                 const fullClassName = `${packageMatch[1]}.${word}`;
                 return await findJavaDefinition(fullClassName);
             }
 
-            // Intentar buscar la clase directamente
+            // Try to search for the class directly
             return await findJavaDefinition(word);
         }
 
@@ -175,7 +175,7 @@ connection.onDefinition(
     }
 );
 
-// Manejar el autocompletado
+// Handle autocompletion
 connection.onCompletion(
     (textDocumentPosition: TextDocumentPositionParams): CompletionItem[] => {
         const document = documents.get(textDocumentPosition.textDocument.uri);
@@ -186,13 +186,13 @@ connection.onCompletion(
         const text = document.getText();
         const offset = document.offsetAt(textDocumentPosition.position);
 
-        // Configuración para el autocompletado HTML
+        // Configuration for HTML autocompletion
         const htmlCompletionConfiguration: CompletionConfiguration = {
             attributeDefaultValue: 'doublequotes',
             hideAutoCompleteProposals: false
         };
 
-        // Obtener sugerencias HTML
+        // Get HTML suggestions
         const htmlResults = htmlLanguageService.doComplete(
             document,
             textDocumentPosition.position,
@@ -202,7 +202,7 @@ connection.onCompletion(
 
         let items: CompletionItem[] = htmlResults.items;
 
-        // Si estamos dentro de una directiva JSP, agregar sugerencias JSP
+        // If we are inside a JSP directive, add JSP suggestions
         const linePrefix = document.getText({
             start: { line: textDocumentPosition.position.line, character: 0 },
             end: textDocumentPosition.position
@@ -228,7 +228,7 @@ connection.onCompletion(
             ]);
         }
 
-        // Si estamos dentro de una directiva page, agregar atributos comunes
+        // If we are inside a page directive, add common attributes
         if (linePrefix.includes('<%@ page')) {
             items = items.concat([
                 {
@@ -249,7 +249,7 @@ connection.onCompletion(
             ]);
         }
 
-        // Agregar acciones estándar JSP
+        // Add JSP standard actions
         if (text[offset - 1] === '<' || linePrefix.trim().endsWith('<')) {
             items = items.concat([
                 {
@@ -289,7 +289,7 @@ connection.onCompletion(
     }
 );
 
-// Manejar la resolución de autocompletado
+// Handle autocompletion resolution
 connection.onCompletionResolve(
     (item: CompletionItem): CompletionItem => {
         const document = documents.get(item.data?.documentUri);
@@ -301,7 +301,7 @@ connection.onCompletionResolve(
             }
         }
 
-        // Manejar otros casos de resolución de autocompletado
+        // Handle other autocompletion resolution cases
         switch (item.data) {
             case 1:
                 item.detail = 'JSP Page Directive';
@@ -332,8 +332,8 @@ connection.onCompletionResolve(
     }
 );
 
-// Hacer que el gestor de documentos escuche en la conexión
+// Make the document manager listen on the connection
 documents.listen(connection);
 
-// Iniciar el servidor de lenguaje
+// Start the language server
 connection.listen(); 

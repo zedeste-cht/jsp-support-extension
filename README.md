@@ -1,71 +1,71 @@
 # JSP Language Support
 
-Esta extensión proporciona soporte completo para archivos JavaServer Pages (JSP) en Visual Studio Code.
+This extension provides complete support for JavaServer Pages (JSP) files in Visual Studio Code.
 
-## Características
+## Features
 
-### Resaltado de Sintaxis
-- Directivas JSP (`<%@ ... %>`)
+### Syntax Highlighting
+- JSP Directives (`<%@ ... %>`)
 - Scriptlets (`<% ... %>`)
-- Expresiones (`<%= ... %>`)
-- Declaraciones (`<%! ... %>`)
-- Acciones estándar JSP (`<jsp:include>`, `<jsp:param>`, etc.)
-- HTML y Java embebido
+- Expressions (`<%= ... %>`)
+- Declarations (`<%! ... %>`)
+- JSP Standard Actions (`<jsp:include>`, `<jsp:param>`, etc.)
+- Embedded HTML and Java
 
-### Autocompletado
-- Directivas JSP (page, include, taglib)
-- Atributos comunes de directivas
-- Acciones estándar JSP
-- Etiquetas JSTL básicas
+### Autocompletion
+- JSP Directives (page, include, taglib)
+- Common Directive Attributes
+- JSP Standard Actions
+- Basic JSTL Tags
 
 ### Snippets
-- Plantilla básica de JSP
-- Directivas comunes
-- Acciones estándar JSP
-- Bloques de código JSP
-- Importaciones JSTL
+- Basic JSP Template
+- Common Directives
+- JSP Standard Actions
+- JSP Code Blocks
+- JSTL Imports
 
-## Uso
+## Usage
 
-La extensión se activa automáticamente para archivos con extensiones `.jsp`, `.jspx` y `.jspf`.
+The extension is automatically activated for files with `.jsp`, `.jspx`, and `.jspf` extensions.
 
-### Snippets Disponibles
+### Available Snippets
 
-- `page` - Directiva page con atributos comunes
-- `include` - Directiva include
-- `taglib` - Directiva taglib para JSTL
-- `jsp:include` - Acción include de JSP
-- `jsp:include-params` - Acción include con parámetros
-- `jsp:param` - Parámetro JSP
-- `jsp:useBean` - Acción useBean
-- `jsp:setProperty` - Acción setProperty
-- `jsp:getProperty` - Acción getProperty
-- `scriptlet` - Bloque scriptlet
-- `expr` - Expresión JSP
-- `decl` - Declaración JSP
-- `comment` - Comentario JSP
+- `page` - Page directive with common attributes
+- `include` - Include directive
+- `taglib` - Taglib directive for JSTL
+- `jsp:include` - JSP include action
+- `jsp:include-params` - Include action with parameters
+- `jsp:param` - JSP parameter
+- `jsp:useBean` - UseBean action
+- `jsp:setProperty` - SetProperty action
+- `jsp:getProperty` - GetProperty action
+- `scriptlet` - Scriptlet block
+- `expr` - JSP expression
+- `decl` - JSP declaration
+- `comment` - JSP comment
 
-## Requisitos
+## Requirements
 
-No hay requisitos especiales para usar esta extensión.
+There are no special requirements to use this extension.
 
-## Configuración de la Extensión
+## Extension Settings
 
-Esta extensión no requiere configuración adicional.
+This extension does not require additional configuration.
 
-## Problemas Conocidos
+## Known Issues
 
-Por favor, reporta cualquier problema en el repositorio de GitHub.
+Please report any issues on the GitHub repository.
 
-## Notas de la Versión
+## Release Notes
 
 ### 0.0.1
 
-Versión inicial con soporte básico para JSP:
-- Resaltado de sintaxis
-- Autocompletado
+Initial release with basic JSP support:
+- Syntax highlighting
+- Autocompletion
 - Snippets
-- Soporte para acciones estándar JSP
+- Support for JSP standard actions
 
 ## Features
 
@@ -133,8 +133,8 @@ You can author your README using Visual Studio Code. Here are some useful editor
 * [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
 * [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
 
-## Licencia
+## License
 
-Este proyecto está licenciado bajo la Licencia MIT - vea el archivo [LICENSE](LICENSE) para más detalles.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-**¡Disfruta!**
+**Enjoy!**
