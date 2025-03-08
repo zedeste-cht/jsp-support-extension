@@ -1,0 +1,140 @@
+{
+    "JSP Page Directive": {
+        "prefix": "page",
+        "body": [
+            "<%@ page language=\"java\" contentType=\"text/html; charset=UTF-8\" pageEncoding=\"UTF-8\"%>"
+        ],
+        "description": "JSP page directive with common attributes"
+    },
+    "JSP Include Directive": {
+        "prefix": "include",
+        "body": [
+            "<%@ include file=\"${1:filename.jsp}\" %>"
+        ],
+        "description": "JSP include directive"
+    },
+    "JSP Taglib Directive": {
+        "prefix": "taglib",
+        "body": [
+            "<%@ taglib prefix=\"${1:c}\" uri=\"${2:http://java.sun.com/jsp/jstl/core}\" %>"
+        ],
+        "description": "JSP taglib directive for JSTL core"
+    },
+    "JSP Standard Include": {
+        "prefix": "jsp:include",
+        "body": [
+            "<jsp:include page=\"${1:page.jsp}\">",
+            "\t${0}",
+            "</jsp:include>"
+        ],
+        "description": "JSP standard include action"
+    },
+    "JSP Standard Include with Param": {
+        "prefix": "jsp:include-params",
+        "body": [
+            "<jsp:include page=\"${1:page.jsp}\">",
+            "\t<jsp:param name=\"${2:paramName}\" value=\"${3:paramValue}\"/>",
+            "\t${0}",
+            "</jsp:include>"
+        ],
+        "description": "JSP standard include action with parameters"
+    },
+    "JSP Param": {
+        "prefix": "jsp:param",
+        "body": [
+            "<jsp:param name=\"${1:paramName}\" value=\"${2:paramValue}\"/>"
+        ],
+        "description": "JSP param action"
+    },
+    "JSP UseBean": {
+        "prefix": "jsp:useBean",
+        "body": [
+            "<jsp:useBean id=\"${1:beanName}\" class=\"${2:package.ClassName}\" scope=\"${3|page,request,session,application|}\"/>"
+        ],
+        "description": "JSP useBean action"
+    },
+    "JSP SetProperty": {
+        "prefix": "jsp:setProperty",
+        "body": [
+            "<jsp:setProperty name=\"${1:beanName}\" property=\"${2:propertyName}\" value=\"${3:value}\"/>"
+        ],
+        "description": "JSP setProperty action"
+    },
+    "JSP GetProperty": {
+        "prefix": "jsp:getProperty",
+        "body": [
+            "<jsp:getProperty name=\"${1:beanName}\" property=\"${2:propertyName}\"/>"
+        ],
+        "description": "JSP getProperty action"
+    },
+    "JSP Forward": {
+        "prefix": "jsp:forward",
+        "body": [
+            "<jsp:forward page=\"${1:page.jsp}\"/>"
+        ],
+        "description": "JSP forward action"
+    },
+    "JSP Scriptlet": {
+        "prefix": "scriptlet",
+        "body": [
+            "<%",
+            "\t$0",
+            "%>"
+        ],
+        "description": "JSP scriptlet block"
+    },
+    "JSP Expression": {
+        "prefix": "expr",
+        "body": [
+            "<%=${1:expression}%>"
+        ],
+        "description": "JSP expression"
+    },
+    "JSP Declaration": {
+        "prefix": "decl",
+        "body": [
+            "<%!",
+            "\t$0",
+            "%>"
+        ],
+        "description": "JSP declaration block"
+    },
+    "JSP Comment": {
+        "prefix": "comment",
+        "body": [
+            "<%-- ${1:comment} --%>"
+        ],
+        "description": "JSP comment"
+    },
+    "JSP Basic Template": {
+        "prefix": "jsp",
+        "body": [
+            "<%@ page language=\"java\" contentType=\"text/html; charset=UTF-8\" pageEncoding=\"UTF-8\"%>",
+            "<!DOCTYPE html>",
+            "<html>",
+            "<head>",
+            "\t<meta charset=\"UTF-8\">",
+            "\t<title>${1:Page Title}</title>",
+            "</head>",
+            "<body>",
+            "\t$0",
+            "</body>",
+            "</html>"
+        ],
+        "description": "Basic JSP template"
+    },
+    "JSTL Core Import": {
+        "prefix": "jstl-core",
+        "body": [
+            "<%@ taglib prefix=\"c\" uri=\"http://java.sun.com/jsp/jstl/core\" %>"
+        ],
+        "description": "Import JSTL Core library"
+    },
+    "JSTL Fmt Import": {
+        "prefix": "jstl-fmt",
+        "body": [
+            "<%@ taglib prefix=\"fmt\" uri=\"http://java.sun.com/jsp/jstl/fmt\" %>"
+        ],
+        "description": "Import JSTL Formatting library"
+    }
+} 

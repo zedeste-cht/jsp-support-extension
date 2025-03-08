@@ -1,0 +1,121 @@
+{
+  "name": "jsp-support",
+  "displayName": "vscode-jsp-support",
+  "description": "JSP Language Support for Visual Studio Code",
+  "version": "0.0.1",
+  "publisher": "jeromy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeromy/vscode-jsp-support"
+  },
+  "keywords": [
+    "jsp",
+    "java",
+    "javaserver pages",
+    "web",
+    "syntax",
+    "highlighting"
+  ],
+  "engines": {
+    "vscode": "^1.54.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:jsp"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "jsp",
+        "aliases": [
+          "JavaServer Pages",
+          "jsp"
+        ],
+        "extensions": [
+          ".jsp",
+          ".jspx",
+          ".jspf"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "jsp",
+        "scopeName": "text.html.jsp",
+        "path": "./syntaxes/jsp.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.java": "java",
+          "source.js": "javascript",
+          "source.css": "css",
+          "text.html": "html"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "jsp",
+        "path": "./snippets/jsp.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "jsp-support.goToJavaDefinition",
+        "title": "Go to Java Definition"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceLangId == jsp && editorTextFocus",
+          "command": "jsp-support.goToJavaDefinition",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.54.0",
+    "@typescript-eslint/eslint-plugin": "^8.25.0",
+    "@typescript-eslint/parser": "^8.25.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.21.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11",
+    "vscode-html-languageservice": "^5.1.0"
+  },
+  "bundledDependencies": [
+    "vscode-languageserver",
+    "vscode-languageserver-textdocument",
+    "vscode-html-languageservice"
+  ]
+}

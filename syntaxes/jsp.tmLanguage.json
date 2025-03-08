@@ -1,0 +1,156 @@
+{
+    "name": "JSP",
+    "scopeName": "text.html.jsp",
+    "fileTypes": ["jsp", "jspx", "jspf"],
+    "patterns": [
+        {
+            "include": "#jsp-directives"
+        },
+        {
+            "include": "#jsp-scriptlets"
+        },
+        {
+            "include": "#jsp-expressions"
+        },
+        {
+            "include": "#jsp-declarations"
+        },
+        {
+            "include": "#jsp-standard-actions"
+        },
+        {
+            "include": "text.html.basic"
+        }
+    ],
+    "repository": {
+        "jsp-directives": {
+            "patterns": [
+                {
+                    "name": "meta.tag.jsp",
+                    "begin": "<%@",
+                    "end": "%>",
+                    "patterns": [
+                        {
+                            "match": "\\b(page|include|taglib)\\b",
+                            "name": "keyword.control.jsp"
+                        },
+                        {
+                            "match": "\\b(language|extends|import|session|buffer|autoFlush|isThreadSafe|info|errorPage|contentType|pageEncoding|isELIgnored|file|uri|prefix)\\b",
+                            "name": "entity.other.attribute-name.jsp"
+                        },
+                        {
+                            "include": "source.java"
+                        }
+                    ]
+                }
+            ]
+        },
+        "jsp-standard-actions": {
+            "patterns": [
+                {
+                    "name": "meta.tag.jsp.standard.action",
+                    "begin": "<jsp:(include|forward|param|plugin|fallback|getProperty|setProperty|useBean)",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "entity.name.tag.jsp"
+                        }
+                    },
+                    "end": "/>|>",
+                    "patterns": [
+                        {
+                            "match": "\\b(page|name|value|id|scope|class|type|beanName|code|codebase|align|height|width|title|archive|property|bean)\\b",
+                            "name": "entity.other.attribute-name.jsp"
+                        },
+                        {
+                            "include": "#string-double-quoted"
+                        },
+                        {
+                            "include": "#string-single-quoted"
+                        }
+                    ]
+                },
+                {
+                    "name": "meta.tag.jsp.standard.action.end",
+                    "match": "</jsp:(include|forward|param|plugin|fallback|getProperty|setProperty|useBean)>",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.tag.jsp"
+                        }
+                    }
+                }
+            ]
+        },
+        "string-double-quoted": {
+            "name": "string.quoted.double.jsp",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "include": "#expression-language"
+                }
+            ]
+        },
+        "string-single-quoted": {
+            "name": "string.quoted.single.jsp",
+            "begin": "'",
+            "end": "'",
+            "patterns": [
+                {
+                    "include": "#expression-language"
+                }
+            ]
+        },
+        "expression-language": {
+            "name": "meta.el.jsp",
+            "begin": "\\$\\{",
+            "end": "\\}",
+            "patterns": [
+                {
+                    "include": "source.java"
+                }
+            ]
+        },
+        "jsp-scriptlets": {
+            "patterns": [
+                {
+                    "name": "source.java.embedded.jsp",
+                    "begin": "<%(?!@|=|--)(?:\\s|\\n)*",
+                    "end": "(?:\\s|\\n)*%>",
+                    "patterns": [
+                        {
+                            "include": "source.java"
+                        }
+                    ]
+                }
+            ]
+        },
+        "jsp-expressions": {
+            "patterns": [
+                {
+                    "name": "source.java.embedded.jsp",
+                    "begin": "<%=",
+                    "end": "%>",
+                    "patterns": [
+                        {
+                            "include": "source.java"
+                        }
+                    ]
+                }
+            ]
+        },
+        "jsp-declarations": {
+            "patterns": [
+                {
+                    "name": "source.java.embedded.jsp",
+                    "begin": "<%!",
+                    "end": "%>",
+                    "patterns": [
+                        {
+                            "include": "source.java"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+} 
