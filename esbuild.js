@@ -52,7 +52,7 @@ async function main() {
 		platform: 'node',
 		// Only exclude vscode, include everything else
 		external: ['vscode'],
-		// Make sure dependencies are included
+		// Asegurarse de que las dependencias se incluyan
 		nodePaths: ['./node_modules'],
 		mainFields: ['module', 'main'],
 		resolveExtensions: ['.ts', '.js']

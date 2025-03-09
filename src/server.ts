@@ -51,16 +51,27 @@ connection.onInitialize((params: InitializeParams) => {
         }
     };
 
-    // Save workspace paths
+    // Save workspace paths and find Java source paths
     if (params.workspaceFolders) {
         workspaceFolders = params.workspaceFolders.map(folder => folder.uri.replace('file://', ''));
+        console.log('Workspace folders:', workspaceFolders);
         
-        // Search for common src/main/java directories in Java projects
+        // Search for Java source directories
         workspaceFolders.forEach(folder => {
-            const javaSrcPath = path.join(folder, 'src', 'main', 'java');
-            if (fs.existsSync(javaSrcPath)) {
-                javaSourcePaths.push(javaSrcPath);
-            }
+            // Common Java source directory patterns
+            const possiblePaths = [
+                path.join(folder, 'src', 'main', 'java'),
+                path.join(folder, 'java'),
+                path.join(folder, 'src'),
+                folder
+            ];
+
+            possiblePaths.forEach(javaSrcPath => {
+                if (fs.existsSync(javaSrcPath)) {
+                    console.log('Found Java source path:', javaSrcPath);
+                    javaSourcePaths.push(javaSrcPath);
+                }
+            });
         });
     }
 
@@ -70,21 +81,32 @@ connection.onInitialize((params: InitializeParams) => {
 // Recursive function to find files
 function findFileRecursive(dir: string, fileName: string): string | null {
     if (!fs.existsSync(dir)) {
+        console.log('Directory does not exist:', dir);
         return null;
     }
 
+    console.log('Searching in directory:', dir);
     const files = fs.readdirSync(dir);
+    
+    // First try direct match in current directory
+    const directMatch = files.find(file => file === fileName);
+    if (directMatch) {
+        const fullPath = path.join(dir, directMatch);
+        console.log('Found direct match:', fullPath);
+        return fullPath;
+    }
+
+    // Then search in subdirectories
     for (const file of files) {
         const filePath = path.join(dir, file);
         const stat = fs.statSync(filePath);
         
         if (stat.isDirectory()) {
+            console.log('Checking subdirectory:', file);
             const found = findFileRecursive(filePath, fileName);
             if (found) {
                 return found;
             }
-        } else if (file === fileName) {
-            return filePath;
         }
     }
     
@@ -93,35 +115,95 @@ function findFileRecursive(dir: string, fileName: string): string | null {
 
 // Function to find Java class definition
 async function findJavaDefinition(className: string): Promise<Location | null> {
+    console.log('Searching for class:', className);
+    
     // Convert class name to file path
     const classFile = className.split('.').pop() + '.java';
     const packagePath = className.split('.').slice(0, -1).join('/');
     
+    console.log('Looking for file:', classFile);
+    console.log('In package path:', packagePath);
+    console.log('Java source paths:', javaSourcePaths);
+    
     for (const srcPath of javaSourcePaths) {
-        const searchPath = packagePath ? path.join(srcPath, packagePath) : srcPath;
-        const filePath = findFileRecursive(searchPath, classFile);
+        console.log('Searching in source path:', srcPath);
         
-        if (filePath) {
-            // Read the file and find the class definition
-            const content = fs.readFileSync(filePath, 'utf-8');
-            const lines = content.split('\n');
-            
-            // Search for the line that defines the class
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const classMatch = line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`));
-                if (classMatch) {
-                    return Location.create(
-                        'file://' + filePath,
-                        Range.create(
-                            Position.create(i, line.indexOf('class')),
-                            Position.create(i, line.length)
-                        )
-                    );
+        // Try multiple possible locations
+        const possiblePaths = [
+            // Exact package path
+            packagePath ? path.join(srcPath, packagePath) : srcPath,
+            // Direct in source path
+            srcPath,
+            // In a 'java' subdirectory
+            path.join(srcPath, 'java'),
+            // In parent directory
+            path.dirname(srcPath)
+        ];
+
+        for (const searchPath of possiblePaths) {
+            console.log('Trying path:', searchPath);
+            if (fs.existsSync(searchPath)) {
+                const filePath = findFileRecursive(searchPath, classFile);
+                if (filePath) {
+                    console.log('Found file at:', filePath);
+                    const content = fs.readFileSync(filePath, 'utf-8');
+                    const lines = content.split('\n');
+                    
+                    // Look for package declaration
+                    let declaredPackage = '';
+                    let foundClass = false;
+                    
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        
+                        // Find package declaration
+                        if (line.startsWith('package ')) {
+                            declaredPackage = line.substring(8, line.length - 1).trim();
+                            console.log('Found package declaration:', declaredPackage);
+                        }
+                        
+                        // Find class definition
+                        const classMatch = line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`));
+                        if (classMatch) {
+                            console.log('Found class definition at line:', i + 1);
+                            foundClass = true;
+                            
+                            // Verify package if we have one
+                            if (packagePath) {
+                                const expectedPackage = packagePath.replace(/\//g, '.');
+                                if (declaredPackage === expectedPackage) {
+                                    return Location.create(
+                                        'file://' + filePath,
+                                        Range.create(
+                                            Position.create(i, line.indexOf('class')),
+                                            Position.create(i, line.length)
+                                        )
+                                    );
+                                } else {
+                                    console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage);
+                                }
+                            } else {
+                                // If no package was specified, accept any package
+                                return Location.create(
+                                    'file://' + filePath,
+                                    Range.create(
+                                        Position.create(i, line.indexOf('class')),
+                                        Position.create(i, line.length)
+                                    )
+                                );
+                            }
+                        }
+                    }
+                    
+                    if (!foundClass) {
+                        console.log('File found but class definition not found in file');
+                    }
                 }
             }
         }
     }
+    
+    console.log('Class not found in any source path');
     return null;
 }
 
@@ -130,6 +212,7 @@ connection.onDefinition(
     async (params: TextDocumentPositionParams): Promise<Definition | null> => {
         const document = documents.get(params.textDocument.uri);
         if (!document) {
+            console.log('Document not found');
             return null;
         }
 
@@ -137,40 +220,63 @@ connection.onDefinition(
         const position = params.position;
         const offset = document.offsetAt(position);
 
+        console.log('Processing definition request at position:', position);
+
         // Search for the word at the current position
         const wordRange = {
             start: Math.max(0, offset - 50),
             end: Math.min(text.length, offset + 50)
         };
         const textAround = text.substring(wordRange.start, wordRange.end);
+        console.log('Text around cursor:', textAround);
         
         // Try to find a Java class name
         const beforeCursor = textAround.substring(0, offset - wordRange.start);
         const afterCursor = textAround.substring(offset - wordRange.start);
         
-        const wordBefore = beforeCursor.match(/[A-Za-z0-9_.]+$/)?.[0] || '';
-        const wordAfter = afterCursor.match(/^[A-Za-z0-9_.]+/)?.[0] || '';
+        // Extract just the class name (stop at first dot or opening parenthesis)
+        const wordBefore = beforeCursor.match(/[A-Za-z0-9_]+$/)?.[0] || '';
+        const wordAfter = afterCursor.match(/^[A-Za-z0-9_]+(?=[.(]|$)/)?.[0] || '';
         const word = wordBefore + wordAfter;
+        console.log('Found word:', word);
 
         // Verify if it looks like a Java class name
-        if (/^[A-Z][A-Za-z0-9_.]*[A-Za-z0-9]$/.test(word)) {
-            // Search for imports
-            const importMatch = text.match(new RegExp(`import\\s+([^;]*\\.${word.split('.').pop()});`));
-            if (importMatch) {
-                return await findJavaDefinition(importMatch[1]);
+        if (/^[A-Z][A-Za-z0-9_]*[A-Za-z0-9]$/.test(word)) {
+            console.log('Word looks like a Java class name');
+            
+            // Search for imports (both Java and JSP formats)
+            const javaImportRegex = new RegExp(`import\\s+([^;]*\\.${word});`);
+            const jspImportRegex = new RegExp(`<%@page\\s+import="([^"]*\\.${word})"\\s*%>`);
+            
+            // Try Java-style import first
+            const javaImportMatch = text.match(javaImportRegex);
+            if (javaImportMatch) {
+                console.log('Found Java import statement:', javaImportMatch[1]);
+                return await findJavaDefinition(javaImportMatch[1]);
+            }
+            
+            // Try JSP-style import
+            const jspImportMatch = text.match(jspImportRegex);
+            if (jspImportMatch) {
+                console.log('Found JSP import statement:', jspImportMatch[1]);
+                return await findJavaDefinition(jspImportMatch[1]);
             }
             
             // If there's no explicit import, search in the same package
             const packageMatch = text.match(/package\s+([^;]+);/);
             if (packageMatch) {
+                console.log('Found package declaration:', packageMatch[1]);
                 const fullClassName = `${packageMatch[1]}.${word}`;
+                console.log('Trying with full class name:', fullClassName);
                 return await findJavaDefinition(fullClassName);
             }
 
             // Try to search for the class directly
+            console.log('Trying direct class search:', word);
             return await findJavaDefinition(word);
         }
 
+        console.log('Word does not look like a Java class name');
         return null;
     }
 );

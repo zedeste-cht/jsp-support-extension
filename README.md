@@ -12,6 +12,22 @@ This extension provides complete support for JavaServer Pages (JSP) files in Vis
 - JSP Standard Actions (`<jsp:include>`, `<jsp:param>`, etc.)
 - Embedded HTML and Java
 
+### Go to Definition
+- Navigate to Java class definitions from JSP files
+- Supports both JSP and Java import styles:
+  ```jsp
+  <%@page import="com.example.MyClass"%>  // JSP import
+  <%
+    import com.example.OtherClass;        // Java import
+    MyClass instance = new MyClass();     // Go to definition works here
+  %>
+  ```
+- Works with:
+  - Class references in code
+  - Import statements
+  - Fully qualified and simple class names
+  - Classes in different package structures
+
 ### Autocompletion
 - JSP Directives (page, include, taglib)
 - Common Directive Attributes
@@ -66,6 +82,7 @@ Initial release with basic JSP support:
 - Autocompletion
 - Snippets
 - Support for JSP standard actions
+- Go to Definition for Java classes
 
 ## Features
 
