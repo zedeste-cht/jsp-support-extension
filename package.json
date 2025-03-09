@@ -4,6 +4,7 @@
   "description": "JSP Language Support for Visual Studio Code",
   "version": "0.0.1",
   "publisher": "jeromy",
+  "author": "Jeromy Llerena",
   "license": "MIT",
   "repository": {
     "type": "git",
