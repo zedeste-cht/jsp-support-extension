@@ -18,6 +18,7 @@ import {
 import { TextDocument as TextDocumentContent } from 'vscode-languageserver-textdocument';
 import * as path from 'path';
 import * as fs from 'fs';
+import { fileURLToPath, pathToFileURL } from 'url';
 import {
     getLanguageService as getHTMLLanguageService,
     LanguageService as HTMLLanguageService,
@@ -53,9 +54,28 @@ connection.onInitialize((params: InitializeParams) => {
 
     // Save workspace paths and find Java source paths
     if (params.workspaceFolders) {
-        workspaceFolders = params.workspaceFolders.map(folder => folder.uri.replace('file://', ''));
+        // Convert VS Code file URIs (which may contain percent-encoding like c%3A) to filesystem paths
+        workspaceFolders = params.workspaceFolders.map(folder => {
+            const uri = folder.uri;
+            if (uri.startsWith('file://')) {
+                try {
+                    return fileURLToPath(uri);
+                } catch (e) {
+                    // Fallback: decode and strip scheme
+                    let decoded = decodeURIComponent(uri).replace(/^file:\/\//i, '');
+                    // Normalize Windows leading slash like /c:/ -> c:/
+                    const winDrive = decoded.match(/^\/([a-zA-Z]):/);
+                    if (winDrive) {
+                        decoded = decoded.slice(1);
+                    }
+                    return decoded;
+                }
+            }
+            return uri;
+        });
         console.log('Workspace folders:', workspaceFolders);
-        
+        // workspaceFolders.push('c:/Users/zedes/Documents/code/jsp-support/jsptest');
+
         // Search for Java source directories
         workspaceFolders.forEach(folder => {
             // Common Java source directory patterns
@@ -66,7 +86,9 @@ connection.onInitialize((params: InitializeParams) => {
                 folder
             ];
 
+            console.log(`javaSrcPath`);
             possiblePaths.forEach(javaSrcPath => {
+                console.log(`javaSrcPath=${javaSrcPath}`);
                 if (fs.existsSync(javaSrcPath)) {
                     console.log('Found Java source path:', javaSrcPath);
                     javaSourcePaths.push(javaSrcPath);
@@ -86,10 +108,14 @@ function findFileRecursive(dir: string, fileName: string): string | null {
     }
 
     const files = fs.readdirSync(dir);
-    
+
     // First try direct match in current directory
-    const directMatch = files.find(file => file === fileName);
+    console.log("dir:", dir);
+    console.log("files:", files);
+    console.log("fileName:", fileName);
+    const directMatch = files.find(file => file.toLocaleLowerCase() === fileName.toLocaleLowerCase());
     if (directMatch) {
+        console.log(directMatch)
         const fullPath = path.join(dir, directMatch);
         console.log('Found direct match:', fullPath);
         return fullPath;
@@ -121,10 +147,11 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
     
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
-    
+    console.log(javaSourcePaths);
+
     for (const srcPath of javaSourcePaths) {
         // Try multiple possible locations
-        const possiblePaths = [
+        var possiblePaths = [
             // Exact package path
             packagePath ? path.join(srcPath, packagePath) : srcPath,
             // Direct in source path
@@ -135,9 +162,13 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
             path.dirname(srcPath)
         ];
 
+        possiblePaths = ['c:\\Users\\zedes\\Documents\\code\\jsp-support\\jsptest\\servlet_maven_demo\\src'];
         for (const searchPath of possiblePaths) {
+            console.log("searchPath:", searchPath);
+            console.log(fs.existsSync(searchPath));
             if (fs.existsSync(searchPath)) {
                 const filePath = findFileRecursive(searchPath, classFile);
+                console.log("filePath:", filePath);
                 if (filePath) {
                     console.log('Found file at:', filePath);
                     const content = fs.readFileSync(filePath, 'utf-8');
@@ -167,7 +198,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                                 const expectedPackage = packagePath.replace(/\//g, '.');
                                 if (declaredPackage === expectedPackage) {
                                     return Location.create(
-                                        'file://' + filePath,
+                                        pathToFileURL(filePath).toString(),
                                         Range.create(
                                             Position.create(i, line.indexOf('class')),
                                             Position.create(i, line.length)
@@ -179,7 +210,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                             } else {
                                 // If no package was specified, accept any package
                                 return Location.create(
-                                    'file://' + filePath,
+                                    pathToFileURL(filePath).toString(),
                                     Range.create(
                                         Position.create(i, line.indexOf('class')),
                                         Position.create(i, line.length)
@@ -244,12 +275,16 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                             continue;
                         }
                         
-                        if (!inClass) continue;
+                        if (!inClass) {
+                            continue;
+                        }
                         
                         // Count brackets to know when we exit the class
                         bracketCount += (line.match(/{/g) || []).length;
                         bracketCount -= (line.match(/}/g) || []).length;
-                        if (bracketCount < 0) break; // We've exited the class
+                        if (bracketCount < 0) {
+                            break; // We've exited the class
+                        }
                         
                         // Look for method definition
                         const methodMatch = line.match(new RegExp(`\\b${methodName}\\s*\\(`));
@@ -282,7 +317,7 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                             if (params.length === parameterCount) {
                                 console.log('Found exact matching method definition at line:', i + 1);
                                 return Location.create(
-                                    'file://' + filePath,
+                                    pathToFileURL(filePath).toString(),
                                     Range.create(
                                         Position.create(i, line.indexOf(methodName)),
                                         Position.create(i, line.indexOf(methodName) + methodName.length)
@@ -297,7 +332,7 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                         console.log('Found best matching method definition at line:', bestMatch.line + 1);
                         const line = lines[bestMatch.line].trim();
                         return Location.create(
-                            'file://' + filePath,
+                            pathToFileURL(filePath).toString(),
                             Range.create(
                                 Position.create(bestMatch.line, line.indexOf(methodName)),
                                 Position.create(bestMatch.line, line.indexOf(methodName) + methodName.length)
