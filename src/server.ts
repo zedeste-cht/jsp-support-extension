@@ -661,8 +661,18 @@ connection.onDefinition(
                     return await findJavaMethodDefinition(className, methodName, params.length);
                 }
                 
-                // If no method call found, try class definition
-                console.log('No method call found, trying class definition');
+                // If no method call found, try method definition
+                console.log('No method call found, trying method definition directly');
+                if (methodName) {
+                    // Try to find the method definition with a default parameter count (0)
+                    // We'll let the method finder pick the best match
+                    const methodDef = await findJavaMethodDefinition(className, methodName, 0);
+                    if (methodDef) {
+                        console.log('Found method definition directly');
+                        return methodDef;
+                    }
+                    console.log('Method definition not found, falling back to class definition');
+                }
                 return await findJavaDefinition(className);
             }
         }
@@ -863,4 +873,4 @@ connection.onCompletionResolve(
 documents.listen(connection);
 
 // Start the language server
-connection.listen(); 
+connection.listen();
