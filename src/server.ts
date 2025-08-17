@@ -94,6 +94,7 @@ connection.onInitialize((params: InitializeParams) => {
                     javaSourcePaths.push(javaSrcPath);
                 }
             });
+            console.log(`javaSourcePaths: ${javaSourcePaths}`);
         });
     }
 
@@ -110,9 +111,6 @@ function findFileRecursive(dir: string, fileName: string): string | null {
     const files = fs.readdirSync(dir);
 
     // First try direct match in current directory
-    console.log("dir:", dir);
-    console.log("files:", files);
-    console.log("fileName:", fileName);
     const directMatch = files.find(file => file.toLocaleLowerCase() === fileName.toLocaleLowerCase());
     if (directMatch) {
         console.log(directMatch)
@@ -147,7 +145,6 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
     
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
-    console.log(javaSourcePaths);
 
     for (const srcPath of javaSourcePaths) {
         // Try multiple possible locations
@@ -162,7 +159,6 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
             path.dirname(srcPath)
         ];
 
-        possiblePaths = ['c:\\Users\\zedes\\Documents\\code\\jsp-support\\jsptest\\servlet_maven_demo\\src'];
         for (const searchPath of possiblePaths) {
             console.log("searchPath:", searchPath);
             console.log(fs.existsSync(searchPath));
@@ -196,7 +192,8 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                             // Verify package if we have one
                             if (packagePath) {
                                 const expectedPackage = packagePath.replace(/\//g, '.');
-                                if (declaredPackage === expectedPackage) {
+                                console.log('declaredPackage:', declaredPackage, 'expectedPackage:', expectedPackage);
+                                // if (declaredPackage === expectedPackage) {
                                     return Location.create(
                                         pathToFileURL(filePath).toString(),
                                         Range.create(
@@ -204,10 +201,11 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                                             Position.create(i, line.length)
                                         )
                                     );
-                                } else {
-                                    console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage);
-                                }
+                                // } else {
+                                //     console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage, 'packagePath:', packagePath);
+                                // }
                             } else {
+                                console.log('No package path specified, accepting any package');
                                 // If no package was specified, accept any package
                                 return Location.create(
                                     pathToFileURL(filePath).toString(),
@@ -622,6 +620,37 @@ connection.onDefinition(
                 const fullClassName = importMatch[1];
                 console.log('Found in import statement:', fullClassName);
                 return await findJavaDefinition(fullClassName);
+            }
+        }
+
+        // 添加對 JSP import 標籤的額外檢查
+        // 檢查游標是否在 JSP import 的類別路徑中
+        const jspImportCheck = text.slice(Math.max(0, offset - 100), offset + 100);
+        const jspImportRegex = /<%@\s*page[^>]*import="([^"]*?)"/;
+        const jspImportMatch = jspImportCheck.match(jspImportRegex);
+        
+        if (jspImportMatch) {
+            // 從游標位置尋找完整的類別名稱
+            const beforeCursor = text.slice(Math.max(0, offset - 100), offset);
+            const afterCursor = text.slice(offset, offset + 100);
+            
+            // 尋找最後一個引號前的內容
+            const importEnd = afterCursor.indexOf('"');
+            if (importEnd >= 0) {
+                // 尋找最後一個引號或逗號後的內容
+                const importStart = beforeCursor.lastIndexOf('"');
+                const commaStart = beforeCursor.lastIndexOf(',');
+                const startPos = Math.max(importStart, commaStart);
+                
+                if (startPos >= 0) {
+                    const partialImport = beforeCursor.slice(startPos + 1) + afterCursor.slice(0, importEnd);
+                    const classPath = partialImport.trim();
+                    
+                    if (classPath && classPath.includes('.')) {
+                        console.log('Found JSP import class path:', classPath);
+                        return await findJavaDefinition(classPath);
+                    }
+                }
             }
         }
 
