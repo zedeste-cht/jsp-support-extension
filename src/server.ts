@@ -174,6 +174,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                     let declaredPackage = '';
                     let foundClass = false;
                     
+                    console.log('lines;', lines);
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i].trim();
                         
@@ -193,7 +194,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                             if (packagePath) {
                                 const expectedPackage = packagePath.replace(/\//g, '.');
                                 console.log('declaredPackage:', declaredPackage, 'expectedPackage:', expectedPackage);
-                                // if (declaredPackage === expectedPackage) {
+                                if (declaredPackage === expectedPackage) {
                                     return Location.create(
                                         pathToFileURL(filePath).toString(),
                                         Range.create(
@@ -201,9 +202,9 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                                             Position.create(i, line.length)
                                         )
                                     );
-                                // } else {
-                                //     console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage, 'packagePath:', packagePath);
-                                // }
+                                } else {
+                                    console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage, 'packagePath:', packagePath);
+                                }
                             } else {
                                 console.log('No package path specified, accepting any package');
                                 // If no package was specified, accept any package
