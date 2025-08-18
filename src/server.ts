@@ -81,12 +81,9 @@ connection.onInitialize((params: InitializeParams) => {
             // Common Java source directory patterns
             const possiblePaths = [
                 path.join(folder, 'src', 'main', 'java'),
-                path.join(folder, 'java'),
                 path.join(folder, 'src'),
-                folder
             ];
 
-            console.log(`javaSrcPath`);
             possiblePaths.forEach(javaSrcPath => {
                 console.log(`javaSrcPath=${javaSrcPath}`);
                 if (fs.existsSync(javaSrcPath)) {
@@ -123,7 +120,7 @@ function findFileRecursive(dir: string, fileName: string): string | null {
     for (const file of files) {
         const filePath = path.join(dir, file);
         const stat = fs.statSync(filePath);
-        
+
         if (stat.isDirectory()) {
             const found = findFileRecursive(filePath, fileName);
             if (found) {
@@ -131,18 +128,18 @@ function findFileRecursive(dir: string, fileName: string): string | null {
             }
         }
     }
-    
+
     return null;
 }
 
 // Function to find Java class definition
 async function findJavaDefinition(className: string): Promise<Location | null> {
     console.log('Searching for class:', className);
-    
+
     // Convert class name to file path
     const classFile = className.split('.').pop() + '.java';
     const packagePath = className.split('.').slice(0, -1).join('/');
-    
+
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
 
@@ -158,6 +155,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
             // In parent directory
             path.dirname(srcPath)
         ];
+        console.log(possiblePaths);
 
         for (const searchPath of possiblePaths) {
             console.log("searchPath:", searchPath);
@@ -169,27 +167,27 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                     console.log('Found file at:', filePath);
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const lines = content.split('\n');
-                    
+
                     // Look for package declaration
                     let declaredPackage = '';
                     let foundClass = false;
-                    
+
                     console.log('lines;', lines);
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i].trim();
-                        
+
                         // Find package declaration
                         if (line.startsWith('package ')) {
                             declaredPackage = line.substring(8, line.length - 1).trim();
                             console.log('Found package declaration:', declaredPackage);
                         }
-                        
+
                         // Find class definition
                         const classMatch = line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`));
                         if (classMatch) {
                             console.log('Found class definition at line:', i + 1);
                             foundClass = true;
-                            
+
                             // Verify package if we have one
                             if (packagePath) {
                                 const expectedPackage = packagePath.replace(/\//g, '.');
@@ -218,7 +216,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                             }
                         }
                     }
-                    
+
                     if (!foundClass) {
                         console.log('File found but class definition not found in file');
                     }
@@ -226,7 +224,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
             }
         }
     }
-    
+
     console.log('Class not found in any source path');
     return null;
 }
@@ -234,14 +232,14 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
 // Function to find Java method definition
 async function findJavaMethodDefinition(className: string, methodName: string, parameterCount: number): Promise<Location | null> {
     console.log('Searching for method:', methodName, 'in class:', className, 'with parameter count:', parameterCount);
-    
+
     // First find the class file
     const classFile = className.split('.').pop() + '.java';
     const packagePath = className.split('.').slice(0, -1).join('/');
-    
+
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
-    
+
     for (const srcPath of javaSourcePaths) {
         // Try multiple possible locations
         const possiblePaths = [
@@ -258,52 +256,52 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                     console.log('Found file at:', filePath);
                     const content = fs.readFileSync(filePath, 'utf-8');
                     const lines = content.split('\n');
-                    
+
                     // Look for method definition
                     let inClass = false;
                     let bracketCount = 0;
                     let methodStartLine = -1;
-                    let bestMatch: {line: number, paramCount: number} | null = null;
-                    
+                    let bestMatch: { line: number, paramCount: number } | null = null;
+
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i].trim();
-                        
+
                         // Check if we're inside the correct class
                         if (line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`))) {
                             inClass = true;
                             continue;
                         }
-                        
+
                         if (!inClass) {
                             continue;
                         }
-                        
+
                         // Count brackets to know when we exit the class
                         bracketCount += (line.match(/{/g) || []).length;
                         bracketCount -= (line.match(/}/g) || []).length;
                         if (bracketCount < 0) {
                             break; // We've exited the class
                         }
-                        
+
                         // Look for method definition
                         const methodMatch = line.match(new RegExp(`\\b${methodName}\\s*\\(`));
                         if (methodMatch) {
                             // Found a potential method, check its parameters
                             let methodLine = line;
                             let currentLine = i;
-                            
+
                             // If the parameters continue on next lines, read until we find the closing parenthesis
                             while (!methodLine.includes(')') && currentLine < lines.length - 1) {
                                 currentLine++;
                                 methodLine += ' ' + lines[currentLine].trim();
                             }
-                            
+
                             // Extract parameters
                             const paramString = methodLine.substring(methodLine.indexOf('(') + 1, methodLine.indexOf(')'));
                             const params = paramString.trim() ? paramString.split(',') : [];
-                            
+
                             console.log('Found method with parameters:', params.length);
-                            
+
                             // Keep track of the best match (closest to our parameter count)
                             if (!bestMatch || Math.abs(params.length - parameterCount) < Math.abs(bestMatch.paramCount - parameterCount)) {
                                 bestMatch = {
@@ -311,7 +309,7 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                                     paramCount: params.length
                                 };
                             }
-                            
+
                             // If we find an exact match, return it immediately
                             if (params.length === parameterCount) {
                                 console.log('Found exact matching method definition at line:', i + 1);
@@ -325,7 +323,7 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
                             }
                         }
                     }
-                    
+
                     // If we found a close match, return it
                     if (bestMatch) {
                         console.log('Found best matching method definition at line:', bestMatch.line + 1);
@@ -342,7 +340,7 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
             }
         }
     }
-    
+
     console.log('Method not found');
     return null;
 }
@@ -358,13 +356,13 @@ interface VariableDeclaration {
 function findVariableDeclarations(text: string): VariableDeclaration[] {
     const declarations: VariableDeclaration[] = [];
     const lines = text.split('\n');
-    
+
     let inJspScriptlet = false;
     let multiLineScriptlet = '';
-    
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        
+
         // Track if we're inside a JSP scriptlet
         if (line.includes('<%')) {
             inJspScriptlet = true;
@@ -372,22 +370,22 @@ function findVariableDeclarations(text: string): VariableDeclaration[] {
         } else if (inJspScriptlet) {
             multiLineScriptlet += ' ' + line;
         }
-        
+
         if (line.includes('%>')) {
             inJspScriptlet = false;
-            
+
             // Process the complete scriptlet
             // Pattern for standard variable declarations: Type var = new Type();
             const declarationPattern = /([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*=\s*new\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)/g;
-            
+
             // Pattern for for-each loop variables: for (Type var : collection)
             const forEachPattern = /for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*:/g;
-            
+
             // Pattern for method parameters: methodName(Type var, ...)
             const paramPattern = /\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*[,)]/g;
-            
+
             let match;
-            
+
             // Check for standard declarations
             while ((match = declarationPattern.exec(multiLineScriptlet)) !== null) {
                 declarations.push({
@@ -396,7 +394,7 @@ function findVariableDeclarations(text: string): VariableDeclaration[] {
                     position: Position.create(i, match.index)
                 });
             }
-            
+
             // Check for for-each loop variables
             while ((match = forEachPattern.exec(multiLineScriptlet)) !== null) {
                 declarations.push({
@@ -405,7 +403,7 @@ function findVariableDeclarations(text: string): VariableDeclaration[] {
                     position: Position.create(i, match.index)
                 });
             }
-            
+
             // Check for method parameters
             while ((match = paramPattern.exec(multiLineScriptlet)) !== null) {
                 declarations.push({
@@ -414,11 +412,11 @@ function findVariableDeclarations(text: string): VariableDeclaration[] {
                     position: Position.create(i, match.index)
                 });
             }
-            
+
             multiLineScriptlet = '';
         }
     }
-    
+
     return declarations;
 }
 
@@ -426,20 +424,20 @@ function findVariableDeclarations(text: string): VariableDeclaration[] {
 function findWordAtPosition(text: string, offset: number): string {
     let start = offset;
     let end = offset;
-    
+
     // Expand backwards
     while (start > 0 && /[A-Za-z0-9_.]/.test(text[start - 1])) {
         start--;
     }
-    
+
     // Expand forwards
     while (end < text.length && /[A-Za-z0-9_.]/.test(text[end])) {
         end++;
     }
-    
+
     const fullWord = text.substring(start, end);
     console.log('Full word found:', fullWord);
-    
+
     // Check if we're in an import statement
     const importMatch = text.slice(Math.max(0, start - 50), start).match(/import\s+([^;]*?)$/);
     if (importMatch) {
@@ -448,7 +446,7 @@ function findWordAtPosition(text: string, offset: number): string {
         console.log('Found in import statement:', importPath);
         return importPath;
     }
-    
+
     // Check if we're in a JSP import directive
     const jspImportMatch = text.slice(Math.max(0, start - 50), start).match(/<%@\s*page\s+import="([^"]*?)$/);
     if (jspImportMatch) {
@@ -457,7 +455,7 @@ function findWordAtPosition(text: string, offset: number): string {
         console.log('Found in JSP import:', importPath);
         return importPath;
     }
-    
+
     // If the word contains a dot, analyze its parts
     if (fullWord.includes('.')) {
         const parts = fullWord.split('.');
@@ -485,26 +483,26 @@ function findWordAtPosition(text: string, offset: number): string {
             }
         }
     }
-    
+
     // Check if we're in a for loop or variable declaration
     const lineStart = text.lastIndexOf('\n', start) + 1;
     const lineEnd = text.indexOf('\n', end);
     const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
-    
+
     // Check for class name in for loop or variable declaration
     const forLoopMatch = currentLine.match(/for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*:/);
     const varDeclMatch = currentLine.match(/([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*=/);
-    
+
     if (forLoopMatch && fullWord === forLoopMatch[1]) {
         console.log('Found class in for loop:', forLoopMatch[1]);
         return forLoopMatch[1];
     }
-    
+
     if (varDeclMatch && fullWord === varDeclMatch[1]) {
         console.log('Found class in variable declaration:', varDeclMatch[1]);
         return varDeclMatch[1];
     }
-    
+
     return fullWord;
 }
 
@@ -516,22 +514,22 @@ function extractMethodParameters(text: string, startPos: number): string[] {
     let inString = false;
     let stringChar = '';
     let inExpression = false;
-    
+
     // Skip initial whitespace
     while (startPos < text.length && /\s/.test(text[startPos])) {
         startPos++;
     }
-    
+
     // Ensure we start with an opening parenthesis
     if (text[startPos] !== '(') {
         return [];
     }
     startPos++;
-    
+
     for (let i = startPos; i < text.length; i++) {
         const char = text[i];
         const prevChar = i > 0 ? text[i - 1] : '';
-        
+
         // Handle string literals
         if ((char === '"' || char === "'") && prevChar !== '\\') {
             if (!inString) {
@@ -543,13 +541,13 @@ function extractMethodParameters(text: string, startPos: number): string[] {
             currentParam += char;
             continue;
         }
-        
+
         // If we're in a string, just add the character
         if (inString) {
             currentParam += char;
             continue;
         }
-        
+
         // Handle brackets and parentheses
         if (char === '(' || char === '[' || char === '{') {
             bracketCount++;
@@ -568,14 +566,14 @@ function extractMethodParameters(text: string, startPos: number): string[] {
             currentParam += char;
             continue;
         }
-        
+
         // Handle operators and special characters in expressions
         if (/[+\-*/%=<>&|!~^]/.test(char)) {
             inExpression = true;
             currentParam += char;
             continue;
         }
-        
+
         // Handle parameter separation
         if (char === ',' && bracketCount === 0) {
             params.push(currentParam.trim());
@@ -583,11 +581,11 @@ function extractMethodParameters(text: string, startPos: number): string[] {
             inExpression = false;
             continue;
         }
-        
+
         // Add character to current parameter
         currentParam += char;
     }
-    
+
     return params;
 }
 
@@ -610,12 +608,12 @@ connection.onDefinition(
         const lineStart = text.lastIndexOf('\n', offset) + 1;
         const lineEnd = text.indexOf('\n', offset);
         const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
-        
+
         if (currentLine.includes('import ') || (currentLine.includes('<%@page') && currentLine.includes('import='))) {
             // We're in an import line, try to get the full class name
             const javaImportMatch = currentLine.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
             const jspImportMatch = currentLine.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
-            
+
             const importMatch = javaImportMatch || jspImportMatch;
             if (importMatch) {
                 const fullClassName = importMatch[1];
@@ -629,12 +627,12 @@ connection.onDefinition(
         const jspImportCheck = text.slice(Math.max(0, offset - 100), offset + 100);
         const jspImportRegex = /<%@\s*page[^>]*import="([^"]*?)"/;
         const jspImportMatch = jspImportCheck.match(jspImportRegex);
-        
+
         if (jspImportMatch) {
             // 從游標位置尋找完整的類別名稱
             const beforeCursor = text.slice(Math.max(0, offset - 100), offset);
             const afterCursor = text.slice(offset, offset + 100);
-            
+
             // 尋找最後一個引號前的內容
             const importEnd = afterCursor.indexOf('"');
             if (importEnd >= 0) {
@@ -642,11 +640,11 @@ connection.onDefinition(
                 const importStart = beforeCursor.lastIndexOf('"');
                 const commaStart = beforeCursor.lastIndexOf(',');
                 const startPos = Math.max(importStart, commaStart);
-                
+
                 if (startPos >= 0) {
                     const partialImport = beforeCursor.slice(startPos + 1) + afterCursor.slice(0, importEnd);
                     const classPath = partialImport.trim();
-                    
+
                     if (classPath && classPath.includes('.')) {
                         console.log('Found JSP import class path:', classPath);
                         return await findJavaDefinition(classPath);
@@ -670,12 +668,12 @@ connection.onDefinition(
                 console.log('Searching for method call in context');
                 const methodInContextPattern = new RegExp(`${className.replace(/\./g, '\\.')}\\.${methodName}\\s*\\([^;{]*[);]`, 'g');
                 const allMatches = [...text.matchAll(methodInContextPattern)];
-                
+
                 // Find the closest match to our position
                 let bestMatch = null;
                 let bestDistance = Infinity;
                 const positionOffset = document.offsetAt(position);
-                
+
                 for (const match of allMatches) {
                     const distance = Math.abs(match.index! - positionOffset);
                     if (distance < bestDistance) {
@@ -683,14 +681,14 @@ connection.onDefinition(
                         bestMatch = match;
                     }
                 }
-                
+
                 if (bestMatch) {
                     console.log('Found method call in context');
                     const params = extractMethodParameters(bestMatch[0], bestMatch[0].indexOf('('));
                     console.log('Found parameters:', params);
                     return await findJavaMethodDefinition(className, methodName, params.length);
                 }
-                
+
                 // If no method call found, try method definition
                 console.log('No method call found, trying method definition directly');
                 if (methodName) {
@@ -710,14 +708,14 @@ connection.onDefinition(
         // Check if it's a class name
         if (/^[A-Z][A-Za-z0-9_.]*$/.test(completeWord)) {
             console.log('Word looks like a Java class name');
-            
+
             // First check in imports
             const lines = text.split('\n');
-            const importLines = lines.filter(line => 
-                line.includes('import ') || 
+            const importLines = lines.filter(line =>
+                line.includes('import ') ||
                 (line.includes('<%@page') && line.includes('import='))
             );
-            
+
             for (const line of importLines) {
                 // Check Java imports
                 const javaImportMatch = line.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
@@ -725,7 +723,7 @@ connection.onDefinition(
                     console.log('Found in Java import:', javaImportMatch[1]);
                     return await findJavaDefinition(javaImportMatch[1]);
                 }
-                
+
                 // Check JSP imports
                 const jspImportMatch = line.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
                 if (jspImportMatch && jspImportMatch[1].endsWith(completeWord)) {
@@ -733,7 +731,7 @@ connection.onDefinition(
                     return await findJavaDefinition(jspImportMatch[1]);
                 }
             }
-            
+
             // If not found in imports, try direct class search
             return await findJavaDefinition(completeWord);
         }
