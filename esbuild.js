@@ -28,7 +28,7 @@ const commonConfig = {
 	format: 'cjs',
 	minify: production,
 	sourcemap: !production,
-	sourcesContent: false,
+	sourcesContent: true,
 	platform: 'node',
 	logLevel: 'silent',
 	plugins: [esbuildProblemMatcherPlugin],

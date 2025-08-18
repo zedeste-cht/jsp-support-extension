@@ -16,6 +16,30 @@
 				"${workspaceFolder}/dist/**/*.js"
 			],
 			"preLaunchTask": "${defaultBuildTask}"
+		},
+		{
+			"name": "Attach to Language Server (6009)",
+			"type": "node",
+			"request": "attach",
+			"port": 6009,
+			"restart": true,
+			"timeout": 20000,
+			"sourceMaps": true,
+			"outFiles": [
+				"${workspaceFolder}/dist/**/*.js"
+			],
+			"skipFiles": [
+				"<node_internals>/**"
+			]
+		}
+	],
+	"compounds": [
+		{
+			"name": "Extension + Server (Attach)",
+			"configurations": [
+				"Run Extension",
+				"Attach to Language Server (6009)"
+			]
 		}
 	]
 }
