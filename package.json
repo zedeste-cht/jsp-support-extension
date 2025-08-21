@@ -2,7 +2,7 @@
   "name": "support-jsp",
   "displayName": "JSP Support for vscode",
   "description": "JSP Language Support for Visual Studio Code clone by jeromyu2023 vscode-jsp-support",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "zedeste",
   "icon": "icon.png",
   "author": {
