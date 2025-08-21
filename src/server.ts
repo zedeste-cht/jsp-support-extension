@@ -85,13 +85,11 @@ connection.onInitialize((params: InitializeParams) => {
             ];
 
             possiblePaths.forEach(javaSrcPath => {
-                console.log(`javaSrcPath=${javaSrcPath}`);
                 if (fs.existsSync(javaSrcPath)) {
                     console.log('Found Java source path:', javaSrcPath);
                     javaSourcePaths.push(javaSrcPath);
                 }
             });
-            console.log(`javaSourcePaths: ${javaSourcePaths}`);
         });
     }
 
@@ -110,7 +108,6 @@ function findFileRecursive(dir: string, fileName: string): string | null {
     // First try direct match in current directory
     const directMatch = files.find(file => file.toLocaleLowerCase() === fileName.toLocaleLowerCase());
     if (directMatch) {
-        console.log(directMatch)
         const fullPath = path.join(dir, directMatch);
         console.log('Found direct match:', fullPath);
         return fullPath;
@@ -158,8 +155,6 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
         console.log(possiblePaths);
 
         for (const searchPath of possiblePaths) {
-            console.log("searchPath:", searchPath);
-            console.log(fs.existsSync(searchPath));
             if (fs.existsSync(searchPath)) {
                 const filePath = findFileRecursive(searchPath, classFile);
                 console.log("filePath:", filePath);
@@ -172,7 +167,6 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
                     let declaredPackage = '';
                     let foundClass = false;
 
-                    console.log('lines;', lines);
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i].trim();
 
@@ -605,51 +599,90 @@ connection.onDefinition(
         console.log('Processing definition request at position:', position);
 
         // First check if we're in an import statement
-        const lineStart = text.lastIndexOf('\n', offset) + 1;
-        const lineEnd = text.indexOf('\n', offset);
-        const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
+        // const lineStart = text.lastIndexOf('\n', offset) + 1;
+        // const lineEnd = text.indexOf('\n', offset);
+        // const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
 
-        if (currentLine.includes('import ') || (currentLine.includes('<%@page') && currentLine.includes('import='))) {
-            // We're in an import line, try to get the full class name
-            const javaImportMatch = currentLine.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
-            const jspImportMatch = currentLine.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
+        // if (currentLine.includes('import ') || (currentLine.includes('<%@page') && currentLine.includes('import='))) {
+        //     // We're in an import line, try to get the full class name
+        //     const javaImportMatch = currentLine.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
+        //     const jspImportMatch = currentLine.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
 
-            const importMatch = javaImportMatch || jspImportMatch;
-            if (importMatch) {
-                const fullClassName = importMatch[1];
-                console.log('Found in import statement:', fullClassName);
-                return await findJavaDefinition(fullClassName);
-            }
-        }
+        //     const importMatch = javaImportMatch || jspImportMatch;
+        //     if (importMatch) {
+        //         const fullClassName = importMatch[1];
+        //         console.log('Found in import statement:', fullClassName);
+        //         return await findJavaDefinition(fullClassName);
+        //     }
+        // }
 
         // 添加對 JSP import 標籤的額外檢查
         // 檢查游標是否在 JSP import 的類別路徑中
-        const jspImportCheck = text.slice(Math.max(0, offset - 100), offset + 100);
-        const jspImportRegex = /<%@\s*page[^>]*import="([^"]*?)"/;
-        const jspImportMatch = jspImportCheck.match(jspImportRegex);
+        // const jspImportCheck = text.slice(Math.max(0, offset - 300), offset + 300);
+        const maxSearchRange = 300;
+        let start = -1;
+        for (let i = offset; i >= Math.max(0, offset - maxSearchRange); i--) {
+            if (text.substring(i, i + 2) === '<%') {
+                start = i;
+                break;
+            }
+        }
 
-        if (jspImportMatch) {
-            // 從游標位置尋找完整的類別名稱
-            const beforeCursor = text.slice(Math.max(0, offset - 100), offset);
-            const afterCursor = text.slice(offset, offset + 100);
+        let end = -1;
+        for (let i = offset; i < Math.min(text.length, offset + maxSearchRange); i++) {
+            if (text.substring(i, i + 2) === '%>') {
+                end = i + 2;
+                break;
+            }
+        }
 
-            // 尋找最後一個引號前的內容
-            const importEnd = afterCursor.indexOf('"');
-            if (importEnd >= 0) {
-                // 尋找最後一個引號或逗號後的內容
-                const importStart = beforeCursor.lastIndexOf('"');
-                const commaStart = beforeCursor.lastIndexOf(',');
-                const startPos = Math.max(importStart, commaStart);
+        let jspImportCheck = '';
+        if (start !== -1 && end !== -1 && start < end) {
+            jspImportCheck = text.substring(start, end);
+        }
 
-                if (startPos >= 0) {
-                    const partialImport = beforeCursor.slice(startPos + 1) + afterCursor.slice(0, importEnd);
-                    const classPath = partialImport.trim();
+        // 在此處加入新的邏輯
+        if (jspImportCheck) {
+            // 使用正則表達式找出 import 屬性的值
+            // 使用 ([\s\S]*?) 來匹配換行符，確保能找到 import 內容
+            const importRegex = /<%@\s*page[\s\S]*?import="([^"]*?)"/;
+            const importMatch = jspImportCheck.match(importRegex);
 
-                    if (classPath && classPath.includes('.')) {
-                        console.log('Found JSP import class path:', classPath);
-                        return await findJavaDefinition(classPath);
-                    }
+            if (importMatch) {
+                // importContent 就是 "commonDO.d_CO,log.Log4SysOperation,..." 這段字串
+                const importContent = importMatch[1];
+
+                // 計算游標在 jspImportCheck 內的相對位置
+                const relativeOffsetInBlock = offset - start;
+
+                // 找出 importContent 在 jspImportCheck 內的起始位置
+                const importContentStart = jspImportCheck.indexOf(importContent);
+
+                // 計算游標在 importContent 內的精確相對位置
+                const relativeOffsetInImport = relativeOffsetInBlock - importContentStart;
+
+                // 尋找游標位置向左的最近一個逗號
+                let pkgStart = importContent.lastIndexOf(',', relativeOffsetInImport - 1);
+                if (pkgStart === -1) {
+                    // 如果沒有找到逗號，表示選中的是第一個 package
+                    pkgStart = 0;
+                } else {
+                    // 找到逗號後，從逗號的下一個位置開始
+                    pkgStart += 1;
                 }
+
+                // 尋找游標位置向右的最近一個逗號
+                let pkgEnd = importContent.indexOf(',', relativeOffsetInImport);
+                if (pkgEnd === -1) {
+                    // 如果沒有找到逗號，表示選中的是最後一個 package
+                    pkgEnd = importContent.length;
+                }
+
+                // 擷取 package 名稱
+                const selectedPackage = importContent.substring(pkgStart, pkgEnd).trim();
+
+                console.log('found package :', selectedPackage);
+                return await findJavaDefinition(selectedPackage);
             }
         }
 

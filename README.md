@@ -2,6 +2,12 @@
 
 This extension provides complete support for JavaServer Pages (JSP) files in Visual Studio Code.
 
+## Notes
+
+This project is based on the original work: [jeromyu2023/vscode-jsp-support](https://github.com/jeromyu2023/vscode-jsp-support).
+
+Because of a path issue, this repository was cloned and modified for further adjustments.
+
 ## Features
 
 ### Syntax Highlighting

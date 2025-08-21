@@ -1,34 +1,27 @@
 {
-  "name": "jsp-support",
-  "displayName": "JSP Language Support for VSCode",
-  "description": "JSP Language Support for Visual Studio Code",
+  "name": "support-jsp",
+  "displayName": "JSP Support for vscode",
+  "description": "JSP Language Support for Visual Studio Code clone by jeromyu2023 vscode-jsp-support",
   "version": "0.0.1",
-  "publisher": "jeromyllerena",
+  "publisher": "zedeste",
   "icon": "icon.png",
   "author": {
-    "name": "Jeromy Llerena",
-    "email": "jeromy.u91@gmail.com"
+    "name": "zedeste",
+    "email": "zedeste@gmail.com"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jeromyu2023/vscode-jsp-support"
+    "url": "https://github.com/zedeste-cht/jsp-support-extension"
   },
   "keywords": [
-    "jsp",
-    "java",
-    "javaserver pages",
-    "web",
-    "syntax",
-    "highlighting"
+    "jsp"
   ],
   "engines": {
-    "vscode": "^1.54.0"
+    "vscode": "^1.102.0"
   },
   "categories": [
-    "Programming Languages",
-    "Snippets",
-    "Other"
+    "Programming Languages"
   ],
   "activationEvents": [
     "onLanguage:jsp"
