@@ -583,6 +583,85 @@ function extractMethodParameters(text: string, startPos: number): string[] {
     return params;
 }
 
+// 新增函數：在當前頁面中查找 JavaScript 函數定義
+function findJavaScriptFunction(text: string, functionName: string): Range | null {
+    const lines = text.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // 查找函數聲明的多種模式
+        const patterns = [
+            // function functionName()
+            new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`),
+            // var functionName = function()
+            new RegExp(`\\bvar\\s+${functionName}\\s*=\\s*function\\s*\\(`),
+            // let functionName = function()
+            new RegExp(`\\blet\\s+${functionName}\\s*=\\s*function\\s*\\(`),
+            // const functionName = function()
+            new RegExp(`\\bconst\\s+${functionName}\\s*=\\s*function\\s*\\(`),
+            // functionName: function()
+            new RegExp(`\\b${functionName}\\s*:\\s*function\\s*\\(`),
+            // const functionName = () =>
+            new RegExp(`\\bconst\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
+            // let functionName = () =>
+            new RegExp(`\\blet\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
+            // var functionName = () =>
+            new RegExp(`\\bvar\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`)
+        ];
+
+        for (const pattern of patterns) {
+            const match = line.match(pattern);
+            if (match) {
+                const startChar = line.indexOf(functionName);
+                if (startChar !== -1) {
+                    console.log(`Found JavaScript function '${functionName}' at line ${i + 1}`);
+                    return Range.create(
+                        Position.create(i, startChar),
+                        Position.create(i, startChar + functionName.length)
+                    );
+                }
+            }
+        }
+
+        // 也查找在 <script> 標籤內的函數
+        if (line.includes('<script')) {
+            // 從當前行開始查找，直到找到 </script>
+            let scriptContent = '';
+            let scriptStartLine = i;
+
+            for (let j = i; j < lines.length; j++) {
+                scriptContent += lines[j] + '\n';
+
+                if (lines[j].includes('</script>')) {
+                    // 在腳本內容中查找函數
+                    const scriptLines = scriptContent.split('\n');
+                    for (let k = 0; k < scriptLines.length; k++) {
+                        const scriptLine = scriptLines[k];
+
+                        for (const pattern of patterns) {
+                            const match = scriptLine.match(pattern);
+                            if (match) {
+                                const startChar = scriptLine.indexOf(functionName);
+                                if (startChar !== -1) {
+                                    console.log(`Found JavaScript function '${functionName}' in script tag at line ${scriptStartLine + k + 1}`);
+                                    return Range.create(
+                                        Position.create(scriptStartLine + k, startChar),
+                                        Position.create(scriptStartLine + k, startChar + functionName.length)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 // Handle Go to Definition requests
 connection.onDefinition(
     async (params: TextDocumentPositionParams): Promise<Definition | null> => {
@@ -767,6 +846,20 @@ connection.onDefinition(
 
             // If not found in imports, try direct class search
             return await findJavaDefinition(completeWord);
+        }
+
+        // 如果在 Java 中找不到，嘗試在當前頁面中查找 JavaScript 函數
+        if (!completeWord.includes('.')) {
+            console.log('Searching for JavaScript function in current page:', completeWord);
+
+            const jsDefinition = findJavaScriptFunction(text, completeWord);
+            if (jsDefinition) {
+                console.log('Found JavaScript function definition');
+                return Location.create(
+                    params.textDocument.uri,
+                    jsDefinition
+                );
+            }
         }
 
         return null;
