@@ -80,8 +80,8 @@ connection.onInitialize((params: InitializeParams) => {
         workspaceFolders.forEach(folder => {
             // Common Java source directory patterns
             const possiblePaths = [
-                path.join(folder, 'src', 'main', 'java'),
                 path.join(folder, 'src'),
+                path.join(folder, 'src', 'main', 'java'),
             ];
 
             possiblePaths.forEach(javaSrcPath => {
@@ -500,6 +500,144 @@ function findWordAtPosition(text: string, offset: number): string {
     return fullWord;
 }
 
+
+// Function to find the complete word at position
+function findWordAtPositionWithBracket(text: string, offset: number): string {
+    let start = offset;
+    let end = offset;
+
+    // Expand backwards
+    while (start > 0 && /[A-Za-z0-9_.()]/.test(text[start - 1])) {
+        start--;
+    }
+
+    // Expand forwards
+    while (end < text.length && /[A-Za-z0-9_.]/.test(text[end])) {
+        end++;
+    }
+
+    const fullWord = text.substring(start, end);
+    console.log('Full word found:', fullWord);
+
+    // Check if we're in an import statement
+    const importMatch = text.slice(Math.max(0, start - 50), start).match(/import\s+([^;]*?)$/);
+    if (importMatch) {
+        // We're in an import statement, return the full import path if available
+        const importPath = importMatch[1] + fullWord;
+        console.log('Found in import statement:', importPath);
+        return importPath;
+    }
+
+    // Check if we're in a JSP import directive
+    const jspImportMatch = text.slice(Math.max(0, start - 50), start).match(/<%@\s*page\s+import="([^"]*?)$/);
+    if (jspImportMatch) {
+        // We're in a JSP import directive, return the full import path
+        const importPath = jspImportMatch[1] + fullWord;
+        console.log('Found in JSP import:', importPath);
+        return importPath;
+    }
+
+    // If the word contains a dot, analyze its parts
+    if (fullWord.includes('.')) {
+        const parts = fullWord.split('.');
+        // If first part starts with uppercase, it's likely a class name
+        if (/^[A-Z]/.test(parts[0])) {
+            // If cursor is before the dot, return class name
+            if (offset - start <= parts[0].length) {
+                console.log('Returning class name:', parts[0]);
+                return parts[0];
+            }
+            // If cursor is after the dot, we're in a method
+            else {
+                console.log('In method call of class:', parts[0]);
+                return fullWord;
+            }
+        } else {
+            // It might be a variable.method call, try to find the variable's type
+            const declarations = findVariableDeclarations(text);
+            const varName = parts[0];
+            const declaration = declarations.find(d => d.name === varName);
+            if (declaration) {
+                console.log('Found variable declaration:', declaration);
+                // Return just the type name for class lookup, or type + method for method lookup
+                return offset - start <= parts[0].length ? declaration.type : declaration.type + '.' + parts.slice(1).join('.');
+            }
+        }
+    }
+
+    // Check if we're in a for loop or variable declaration
+    const lineStart = text.lastIndexOf('\n', start) + 1;
+    const lineEnd = text.indexOf('\n', end);
+    const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
+
+    // Check for class name in for loop or variable declaration
+    const forLoopMatch = currentLine.match(/for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*:/);
+    const varDeclMatch = currentLine.match(/([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*=/);
+
+    if (forLoopMatch && fullWord === forLoopMatch[1]) {
+        console.log('Found class in for loop:', forLoopMatch[1]);
+        return forLoopMatch[1];
+    }
+
+    if (varDeclMatch && fullWord === varDeclMatch[1]) {
+        console.log('Found class in variable declaration:', varDeclMatch[1]);
+        return varDeclMatch[1];
+    }
+
+    return fullWord;
+}
+
+/**
+ * 根據指定的規則從 Java 風格的方法路徑中拆分出 class 和 function 名稱。
+ * 規則：
+ * 1. function 永遠是最後一個點（.）後面的部分。
+ * 2. 如果路徑中存在括號 "()"，則 class 是第一個括號前的部分。
+ * 3. 如果路徑中不存在括號，則 class 是最後一個點前的整個部分（靜態方法呼叫）。
+ * @param {string} fullPath - 完整的方法呼叫路徑字串。
+ * @returns {{class: string, function: string}} - 包含 class 和 function 名稱的物件。
+ */
+function splitJavaPathRevised(fullPath: String) {
+    // 檢查輸入是否為有效字串
+    if (typeof fullPath !== 'string' || fullPath.trim() === '') {
+        return { class: '', function: '' };
+    }
+
+    // 1. 找到最後一個點（.）的位置，以此為基準分割 function 和 class 路徑
+    const lastDotIndex = fullPath.lastIndexOf('.');
+
+    // 如果找不到點，可能整個字串就是一個 function，或格式不符
+    if (lastDotIndex === -1) {
+        const functionNameOnly = fullPath.split('(')[0];
+        return { class: '', function: functionNameOnly };
+    }
+
+    // 2. 取得 function 名稱
+    // 取出最後一個點之後的部分，例如 "get(arg4)"
+    const methodPart = fullPath.substring(lastDotIndex + 1);
+    // 移除括號及其內容，得到純粹的 function 名稱
+    const functionName = methodPart.split('(')[0];
+
+    // 3. 取得 class 路徑部分 (在最後一個點之前的所有內容)
+    const classPath = fullPath.substring(0, lastDotIndex);
+
+    // 4. 根據規則判斷 class 名稱
+    let className = '';
+    const firstParenIndex = classPath.indexOf('(');
+
+    if (firstParenIndex !== -1) {
+        // 情況 A: 如果路徑中包含括號，class 是第一個括號前的部分
+        className = classPath.substring(0, firstParenIndex);
+    } else {
+        // 情況 B: 如果路徑中沒有括號，class 就是整個 class 路徑 (靜態呼叫)
+        className = classPath;
+    }
+
+    return {
+        class: className,
+        function: functionName
+    };
+}
+
 // Function to extract parameters from a method call considering complex expressions
 function extractMethodParameters(text: string, startPos: number): string[] {
     let bracketCount = 0;
@@ -770,8 +908,25 @@ connection.onDefinition(
         console.log('Complete word at cursor:', completeWord);
 
         // If it contains a dot, it might be a method call
+        let className = null;
+        let methodName = null;
         if (completeWord.includes('.')) {
-            const [className, methodName] = completeWord.split('.');
+            if (completeWord.startsWith('.')) {
+                console.log('Probability a method call');
+                const wordWithBracket = findWordAtPositionWithBracket(text, offset);
+                const splitPattern = splitJavaPathRevised(wordWithBracket);
+                className = splitPattern.class;
+                methodName = splitPattern.function;
+            } else {
+                const result = await findJavaDefinition(completeWord);
+                if (result !== null && result !== undefined) {
+                    return result;
+                } else {
+                    console.log('No definition class found for complete word');
+                }
+                [className, methodName] = completeWord.split('.');
+            }
+            // return await findJavaDefinition(completeWord);
             console.log('Found potential method call:', className, methodName);
 
             // If we have both class and method
