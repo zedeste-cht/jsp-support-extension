@@ -85,7 +85,7 @@
           "items": {
             "type": "string"
           },
-          "default": ["src/main/java"],
+          "default": [],
           "description": "List of relative paths to search for Java source files within workspace folders."
         }
       }

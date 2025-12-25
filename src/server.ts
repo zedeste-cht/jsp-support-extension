@@ -77,7 +77,7 @@ connection.onInitialize((params: InitializeParams) => {
         // workspaceFolders.push('c:/Users/zedes/Documents/code/jsp-support/jsptest');
 
         // Search for Java source directories
-        const javaSourcePathsConfig = params.initializationOptions?.javaSourcePaths || ['src/main/java'];
+        const javaSourcePathsConfig = params.initializationOptions?.javaSourcePaths || [];
         workspaceFolders.forEach(folder => {
             const pomPath = path.join(folder, 'pom.xml');
             let allJavaSourcePaths: string[] = [...javaSourcePathsConfig]; // Always include configured paths
@@ -181,6 +181,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
 
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
+    console.log('Java source paths:', javaSourcePaths);
 
     for (const srcPath of javaSourcePaths) {
         // Try multiple possible locations
@@ -188,13 +189,13 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
             // Exact package path
             packagePath ? path.join(srcPath, packagePath) : srcPath,
             // Direct in source path
-            srcPath,
+            // srcPath,
             // In a 'java' subdirectory
-            path.join(srcPath, 'java'),
+            // path.join(srcPath, 'java'),
             // In parent directory
-            path.dirname(srcPath)
+            // path.dirname(srcPath)
         ];
-        console.log(possiblePaths);
+        console.log('possiblePaths:', possiblePaths);
 
         for (const searchPath of possiblePaths) {
             if (fs.existsSync(searchPath)) {
