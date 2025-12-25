@@ -36,7 +36,13 @@ const htmlLanguageService: HTMLLanguageService = getHTMLLanguageService();
 
 // Store project base paths
 let workspaceFolders: string[] = [];
-let javaSourcePaths: string[] = [];
+
+interface JavaSourcePath {
+    modulePath: string;
+    sourcePath: string;
+}
+
+let javaSourcePaths: JavaSourcePath[] = [];
 
 connection.onInitialize((params: InitializeParams) => {
     const result: InitializeResult = {
@@ -78,43 +84,32 @@ connection.onInitialize((params: InitializeParams) => {
 
         // Search for Java source directories
         const javaSourcePathsConfig = params.initializationOptions?.javaSourcePaths || [];
+        javaSourcePaths = [];
         workspaceFolders.forEach(folder => {
-            const pomPath = path.join(folder, 'pom.xml');
-            let allJavaSourcePaths: string[] = [...javaSourcePathsConfig]; // Always include configured paths
-
-            if (fs.existsSync(pomPath)) {
-                // Parse pom.xml to get additional source directories
-                const javaSourcePathsFromPom = parsePomXml(pomPath);
-                console.log('Java source paths from pom.xml:', javaSourcePathsFromPom);
-                allJavaSourcePaths = [...new Set([...allJavaSourcePaths, ...javaSourcePathsFromPom])];
-            }
-
-            console.log('All Java source paths:', allJavaSourcePaths);
-
-            // Convert relative paths to absolute paths
-            const possiblePaths = allJavaSourcePaths.map((relPath: string) => path.join(folder, relPath));
-
-            possiblePaths.forEach((javaSrcPath: string) => {
-                if (fs.existsSync(javaSrcPath)) {
-                    console.log('Found Java source path:', javaSrcPath);
-                    javaSourcePaths.push(javaSrcPath);
-                }
-            });
+            collectJavaSourcePaths(folder, path.join(folder, 'pom.xml'), javaSourcePathsConfig);
         });
+        console.log('All Java source paths:', javaSourcePaths);
     }
 
     return result;
 });
 
-// Function to parse pom.xml and extract source directories
-function parsePomXml(pomPath: string): string[] {
+// Interface for POM information
+interface PomInfo {
+    sourceDirectories: string[];
+    modules: string[];
+}
+
+// Function to parse pom.xml and extract source directories and modules
+function parsePomXml(pomPath: string): PomInfo {
     if (!fs.existsSync(pomPath)) {
-        return [];
+        return { sourceDirectories: [], modules: [] };
     }
 
     try {
         const pomContent = fs.readFileSync(pomPath, 'utf-8');
         const sourceDirectories: string[] = [];
+        const modules: string[] = [];
 
         // Extract <sourceDirectory> from pom.xml
         const sourceDirRegex = /<sourceDirectory>(.*?)<\/sourceDirectory>/gs;
@@ -126,16 +121,76 @@ function parsePomXml(pomPath: string): string[] {
             }
         }
 
+        // Extract <module> from <modules> block
+        const modulesBlockRegex = /<modules>(.*?)<\/modules>/gs;
+        const modulesBlockMatch = modulesBlockRegex.exec(pomContent);
+        if (modulesBlockMatch) {
+            const modulesContent = modulesBlockMatch[1];
+            const moduleRegex = /<module>(.*?)<\/module>/gs;
+            let moduleMatch;
+            while ((moduleMatch = moduleRegex.exec(modulesContent)) !== null) {
+                const moduleName = moduleMatch[1].trim();
+                if (moduleName) {
+                    modules.push(moduleName);
+                }
+            }
+        }
+
         // If no sourceDirectory found, use default
         if (sourceDirectories.length === 0) {
             sourceDirectories.push('src/main/java');
         }
 
-        return sourceDirectories;
+        return { sourceDirectories, modules };
     } catch (error) {
         console.error('Error parsing pom.xml:', error);
-        return ['src/main/java'];
+        return { sourceDirectories: ['src/main/java'], modules: [] };
     }
+}
+
+// Function to recursively collect Java source paths from POM and its modules
+function collectJavaSourcePaths(basePath: string, pomPath: string, javaSourcePathsConfig: string[]): void {
+    if (!fs.existsSync(pomPath)) {
+        // If no pom.xml, just use configured paths or default
+        javaSourcePathsConfig.forEach(relPath => {
+            const absPath = path.join(basePath, relPath);
+            if (fs.existsSync(absPath)) {
+                javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
+            }
+        });
+        // Also check default paths if no config: src/main/java, java, src, and root directory
+        if (javaSourcePathsConfig.length === 0) {
+            const defaultPaths = ['src/main/java', 'java', 'src', ''];
+            defaultPaths.forEach(relPath => {
+                const absPath = path.join(basePath, relPath);
+                if (fs.existsSync(absPath)) {
+                    javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
+                }
+            });
+        }
+        return;
+    }
+
+    const pomInfo = parsePomXml(pomPath);
+
+    // Add source directories from this POM
+    pomInfo.sourceDirectories.forEach(relPath => {
+        const absPath = path.join(basePath, relPath);
+        if (fs.existsSync(absPath)) {
+            // Avoid duplicates
+            if (!javaSourcePaths.some(p => p.sourcePath === absPath)) {
+                console.log('Found Java source path:', absPath, 'in module:', basePath);
+                javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
+            }
+        }
+    });
+
+    // Recursively process sub-modules
+    pomInfo.modules.forEach(moduleName => {
+        const moduleBasePath = path.join(basePath, moduleName);
+        const modulePomPath = path.join(moduleBasePath, 'pom.xml');
+        collectJavaSourcePaths(moduleBasePath, modulePomPath, []); // Sub-modules don't use root config usually
+    });
 }
 
 // Recursive function to find files
@@ -172,7 +227,7 @@ function findFileRecursive(dir: string, fileName: string): string | null {
 }
 
 // Function to find Java class definition
-async function findJavaDefinition(className: string): Promise<Location | null> {
+async function findJavaDefinition(className: string, currentFileUri?: string): Promise<Location | null> {
     console.log('Searching for class:', className);
 
     // Convert class name to file path
@@ -183,17 +238,32 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
     console.log('In package path:', packagePath);
     console.log('Java source paths:', javaSourcePaths);
 
-    for (const srcPath of javaSourcePaths) {
+    // Sort javaSourcePaths to prioritize the module containing currentFileUri
+    let sortedSourcePaths = [...javaSourcePaths];
+    if (currentFileUri && currentFileUri.startsWith('file://')) {
+        try {
+            const currentFilePath = fileURLToPath(currentFileUri);
+            console.log('Current file path:', currentFilePath);
+            sortedSourcePaths.sort((a, b) => {
+                const aIsParent = currentFilePath.startsWith(a.modulePath);
+                const bIsParent = currentFilePath.startsWith(b.modulePath);
+                if (aIsParent && !bIsParent) return -1;
+                if (!aIsParent && bIsParent) return 1;
+                // If both or neither are parents, prioritize the one with longer modulePath (more specific)
+                return b.modulePath.length - a.modulePath.length;
+            });
+        } catch (e) {
+            console.error('Error converting URI to path:', e);
+        }
+    }
+    console.log('sortedSourcePaths:', sortedSourcePaths);
+
+    for (const sourceInfo of sortedSourcePaths) {
+        const srcPath = sourceInfo.sourcePath;
         // Try multiple possible locations
         var possiblePaths = [
             // Exact package path
             packagePath ? path.join(srcPath, packagePath) : srcPath,
-            // Direct in source path
-            // srcPath,
-            // In a 'java' subdirectory
-            // path.join(srcPath, 'java'),
-            // In parent directory
-            // path.dirname(srcPath)
         ];
         console.log('possiblePaths:', possiblePaths);
 
@@ -267,7 +337,7 @@ async function findJavaDefinition(className: string): Promise<Location | null> {
 }
 
 // Function to find Java method definition
-async function findJavaMethodDefinition(className: string, methodName: string, parameterCount: number): Promise<Location | null> {
+async function findJavaMethodDefinition(className: string, methodName: string, parameterCount: number, currentFileUri?: string): Promise<Location | null> {
     console.log('Searching for method:', methodName, 'in class:', className, 'with parameter count:', parameterCount);
 
     // First find the class file
@@ -277,7 +347,25 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
     console.log('Looking for file:', classFile);
     console.log('In package path:', packagePath);
 
-    for (const srcPath of javaSourcePaths) {
+    // Sort javaSourcePaths to prioritize the module containing currentFileUri
+    let sortedSourcePaths = [...javaSourcePaths];
+    if (currentFileUri && currentFileUri.startsWith('file://')) {
+        try {
+            const currentFilePath = fileURLToPath(currentFileUri);
+            sortedSourcePaths.sort((a, b) => {
+                const aIsParent = currentFilePath.startsWith(a.modulePath);
+                const bIsParent = currentFilePath.startsWith(b.modulePath);
+                if (aIsParent && !bIsParent) return -1;
+                if (!aIsParent && bIsParent) return 1;
+                return 0;
+            });
+        } catch (e) {
+            console.error('Error converting URI to path:', e);
+        }
+    }
+
+    for (const sourceInfo of sortedSourcePaths) {
+        const srcPath = sourceInfo.sourcePath;
         // Try multiple possible locations
         const possiblePaths = [
             packagePath ? path.join(srcPath, packagePath) : srcPath,
@@ -942,7 +1030,7 @@ connection.onDefinition(
                 const selectedPackage = importContent.substring(pkgStart, pkgEnd).trim();
 
                 console.log('found package :', selectedPackage);
-                return await findJavaDefinition(selectedPackage);
+                return await findJavaDefinition(selectedPackage, params.textDocument.uri);
             }
         }
 
@@ -961,7 +1049,7 @@ connection.onDefinition(
                 className = splitPattern.class;
                 methodName = splitPattern.function;
             } else {
-                const result = await findJavaDefinition(completeWord);
+                const result = await findJavaDefinition(completeWord, params.textDocument.uri);
                 if (result !== null && result !== undefined) {
                     return result;
                 } else {
@@ -969,7 +1057,7 @@ connection.onDefinition(
                 }
                 [className, methodName] = completeWord.split('.');
             }
-            // return await findJavaDefinition(completeWord);
+            // return await findJavaDefinition(completeWord, params.textDocument.uri);
             console.log('Found potential method call:', className, methodName);
 
             // If we have both class and method
@@ -994,9 +1082,9 @@ connection.onDefinition(
 
                 if (bestMatch) {
                     console.log('Found method call in context');
-                    const params = extractMethodParameters(bestMatch[0], bestMatch[0].indexOf('('));
-                    console.log('Found parameters:', params);
-                    return await findJavaMethodDefinition(className, methodName, params.length);
+                    const params_method = extractMethodParameters(bestMatch[0], bestMatch[0].indexOf('('));
+                    console.log('Found parameters:', params_method);
+                    return await findJavaMethodDefinition(className, methodName, params_method.length, params.textDocument.uri);
                 }
 
                 // If no method call found, try method definition
@@ -1004,14 +1092,14 @@ connection.onDefinition(
                 if (methodName) {
                     // Try to find the method definition with a default parameter count (0)
                     // We'll let the method finder pick the best match
-                    const methodDef = await findJavaMethodDefinition(className, methodName, 0);
+                    const methodDef = await findJavaMethodDefinition(className, methodName, 0, params.textDocument.uri);
                     if (methodDef) {
                         console.log('Found method definition directly');
                         return methodDef;
                     }
                     console.log('Method definition not found, falling back to class definition');
                 }
-                return await findJavaDefinition(className);
+                return await findJavaDefinition(className, params.textDocument.uri);
             }
         }
 
@@ -1031,19 +1119,19 @@ connection.onDefinition(
                 const javaImportMatch = line.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
                 if (javaImportMatch && javaImportMatch[1].endsWith(completeWord)) {
                     console.log('Found in Java import:', javaImportMatch[1]);
-                    return await findJavaDefinition(javaImportMatch[1]);
+                    return await findJavaDefinition(javaImportMatch[1], params.textDocument.uri);
                 }
 
                 // Check JSP imports
                 const jspImportMatch = line.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
                 if (jspImportMatch && jspImportMatch[1].endsWith(completeWord)) {
                     console.log('Found in JSP import:', jspImportMatch[1]);
-                    return await findJavaDefinition(jspImportMatch[1]);
+                    return await findJavaDefinition(jspImportMatch[1], params.textDocument.uri);
                 }
             }
 
             // If not found in imports, try direct class search
-            return await findJavaDefinition(completeWord);
+            return await findJavaDefinition(completeWord, params.textDocument.uri);
         }
 
         // 如果在 Java 中找不到，嘗試在當前頁面中查找 JavaScript 函數
