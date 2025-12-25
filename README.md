@@ -83,6 +83,14 @@ Please report any issues on the GitHub repository.
 
 ## Release Notes
 
+### 0.0.5
+
+Enhanced Maven multi-module project support:
+- Automatic detection and parsing of `<modules>` in parent `pom.xml` files
+- Recursive collection of Java source paths from all sub-modules in multi-module Maven projects
+- Module-aware Go to Definition: prioritizes searching in the module containing the current JSP file
+- Improved accuracy for class and method navigation in complex project structures
+
 ### 0.0.4
 
 Enhanced Java class navigation:
