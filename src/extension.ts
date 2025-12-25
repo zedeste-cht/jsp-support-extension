@@ -40,6 +40,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		documentSelector: [{ scheme: 'file', language: 'jsp' }],
 		synchronize: {
 			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{jsp,jspx,jspf}')
+		},
+		initializationOptions: {
+			javaSourcePaths: vscode.workspace.getConfiguration('jsp-support').get('javaSourcePaths', ['src/main/java'])
 		}
 	};
 

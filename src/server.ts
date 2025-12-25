@@ -77,14 +77,24 @@ connection.onInitialize((params: InitializeParams) => {
         // workspaceFolders.push('c:/Users/zedes/Documents/code/jsp-support/jsptest');
 
         // Search for Java source directories
+        const javaSourcePathsConfig = params.initializationOptions?.javaSourcePaths || ['src/main/java'];
         workspaceFolders.forEach(folder => {
-            // Common Java source directory patterns
-            const possiblePaths = [
-                path.join(folder, 'src'),
-                path.join(folder, 'src', 'main', 'java'),
-            ];
+            const pomPath = path.join(folder, 'pom.xml');
+            let allJavaSourcePaths: string[] = [...javaSourcePathsConfig]; // Always include configured paths
 
-            possiblePaths.forEach(javaSrcPath => {
+            if (fs.existsSync(pomPath)) {
+                // Parse pom.xml to get additional source directories
+                const javaSourcePathsFromPom = parsePomXml(pomPath);
+                console.log('Java source paths from pom.xml:', javaSourcePathsFromPom);
+                allJavaSourcePaths = [...new Set([...allJavaSourcePaths, ...javaSourcePathsFromPom])];
+            }
+
+            console.log('All Java source paths:', allJavaSourcePaths);
+
+            // Convert relative paths to absolute paths
+            const possiblePaths = allJavaSourcePaths.map((relPath: string) => path.join(folder, relPath));
+
+            possiblePaths.forEach((javaSrcPath: string) => {
                 if (fs.existsSync(javaSrcPath)) {
                     console.log('Found Java source path:', javaSrcPath);
                     javaSourcePaths.push(javaSrcPath);
@@ -95,6 +105,38 @@ connection.onInitialize((params: InitializeParams) => {
 
     return result;
 });
+
+// Function to parse pom.xml and extract source directories
+function parsePomXml(pomPath: string): string[] {
+    if (!fs.existsSync(pomPath)) {
+        return [];
+    }
+
+    try {
+        const pomContent = fs.readFileSync(pomPath, 'utf-8');
+        const sourceDirectories: string[] = [];
+
+        // Extract <sourceDirectory> from pom.xml
+        const sourceDirRegex = /<sourceDirectory>(.*?)<\/sourceDirectory>/gs;
+        let match;
+        while ((match = sourceDirRegex.exec(pomContent)) !== null) {
+            const sourceDir = match[1].trim();
+            if (sourceDir) {
+                sourceDirectories.push(sourceDir);
+            }
+        }
+
+        // If no sourceDirectory found, use default
+        if (sourceDirectories.length === 0) {
+            sourceDirectories.push('src/main/java');
+        }
+
+        return sourceDirectories;
+    } catch (error) {
+        console.error('Error parsing pom.xml:', error);
+        return ['src/main/java'];
+    }
+}
 
 // Recursive function to find files
 function findFileRecursive(dir: string, fileName: string): string | null {
