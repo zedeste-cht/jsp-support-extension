@@ -247,8 +247,8 @@ async function findJavaDefinition(className: string, currentFileUri?: string): P
             sortedSourcePaths.sort((a, b) => {
                 const aIsParent = currentFilePath.startsWith(a.modulePath);
                 const bIsParent = currentFilePath.startsWith(b.modulePath);
-                if (aIsParent && !bIsParent) return -1;
-                if (!aIsParent && bIsParent) return 1;
+                if (aIsParent && !bIsParent) { return -1; }
+                if (!aIsParent && bIsParent) { return 1; }
                 // If both or neither are parents, prioritize the one with longer modulePath (more specific)
                 return b.modulePath.length - a.modulePath.length;
             });
@@ -355,9 +355,9 @@ async function findJavaMethodDefinition(className: string, methodName: string, p
             sortedSourcePaths.sort((a, b) => {
                 const aIsParent = currentFilePath.startsWith(a.modulePath);
                 const bIsParent = currentFilePath.startsWith(b.modulePath);
-                if (aIsParent && !bIsParent) return -1;
-                if (!aIsParent && bIsParent) return 1;
-                return 0;
+                if (aIsParent && !bIsParent) { return -1; }
+                if (!aIsParent && bIsParent) { return 1; }
+                return b.modulePath.length - a.modulePath.length;
             });
         } catch (e) {
             console.error('Error converting URI to path:', e);
