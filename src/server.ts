@@ -119,6 +119,17 @@ connection.onInitialize((params: InitializeParams) => {
         for (const folder of workspaceFolders) {
             collectJavaSourcePaths(folder, path.join(folder, 'pom.xml'), javaSourcePathsConfig);
         }
+
+        // Fallback: scan for any pom.xml files not yet discovered
+        // This handles cases like:
+        //   - Parent POM in a subdirectory (e.g. parent-suite/pom.xml)
+        //   - Deeply nested multi-module Maven projects
+        //   - Modules not referenced in parent POM's <modules>
+        const discoveredPaths = new Set(javaSourcePaths.map(p => p.sourcePath));
+        for (const folder of workspaceFolders) {
+            scanForPomFiles(folder, discoveredPaths, javaSourcePathsConfig);
+        }
+
         console.log('All Java source paths:', javaSourcePaths);
         console.log('All Maven dependencies:', mavenDependencies.length);
     }
@@ -256,6 +267,60 @@ function collectJavaSourcePaths(basePath: string, pomPath: string, configPaths: 
 function addSourcePathIfNew(modulePath: string, sourcePath: string): void {
     if (!javaSourcePaths.some(p => p.sourcePath === sourcePath)) {
         javaSourcePaths.push({ modulePath, sourcePath });
+    }
+}
+
+/** Directories to skip when scanning for pom.xml files */
+const SCAN_SKIP_DIRS = new Set(['node_modules', '.git', 'target', 'build', '.idea', '.settings', 'bin', '.mvn']);
+
+/**
+ * Recursively scan a directory for pom.xml files that were not already
+ * discovered through the normal module-recursion path.
+ * This serves as a fallback for:
+ *   - Parent POM located in a subdirectory
+ *   - Deeply nested multi-module projects
+ *   - Modules not declared in any parent POM
+ */
+function scanForPomFiles(dir: string, alreadyDiscovered: Set<string>, configPaths: string[], depth: number = 0): void {
+    // Safety: limit recursion depth to avoid traversing enormous trees
+    if (depth > 10) { return; }
+
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+
+    for (const entry of entries) {
+        if (!entry.isDirectory()) { continue; }
+        if (SCAN_SKIP_DIRS.has(entry.name)) { continue; }
+
+        const subDir = path.join(dir, entry.name);
+        const pomPath = path.join(subDir, 'pom.xml');
+
+        if (fs.existsSync(pomPath)) {
+            const pomInfo = parsePomXml(pomPath);
+
+            // Add source directories from this pom if not already discovered
+            for (const relPath of pomInfo.sourceDirectories) {
+                const absPath = path.join(subDir, relPath);
+                if (!alreadyDiscovered.has(absPath) && fs.existsSync(absPath)) {
+                    addSourcePathIfNew(subDir, absPath);
+                    alreadyDiscovered.add(absPath);
+                }
+            }
+
+            // Collect Maven dependencies (deduplicate)
+            for (const dep of pomInfo.dependencies) {
+                if (!mavenDependencies.some(d => d.groupId === dep.groupId && d.artifactId === dep.artifactId && d.version === dep.version)) {
+                    mavenDependencies.push(dep);
+                }
+            }
+        }
+
+        // Continue scanning deeper
+        scanForPomFiles(subDir, alreadyDiscovered, configPaths, depth + 1);
     }
 }
 
