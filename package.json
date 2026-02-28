@@ -87,6 +87,16 @@
           },
           "default": [],
           "description": "List of relative paths to search for Java source files within workspace folders."
+        },
+        "jsp-support.javaHome": {
+          "type": "string",
+          "default": "",
+          "description": "Path to JAVA_HOME for JDK source navigation (src.zip). Falls back to JAVA_HOME environment variable."
+        },
+        "jsp-support.mavenRepository": {
+          "type": "string",
+          "default": "",
+          "description": "Path to local Maven repository. Defaults to ~/.m2/repository."
         }
       }
     }
@@ -106,6 +116,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "^1.102.0",
@@ -119,6 +130,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "vscode-html-languageservice": "^5.1.0",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
@@ -127,11 +139,13 @@
   "bundledDependencies": [
     "vscode-languageserver",
     "vscode-languageserver-textdocument",
-    "vscode-html-languageservice"
+    "vscode-html-languageservice",
+    "adm-zip"
   ],
   "bundleDependencies": [
     "vscode-languageserver",
     "vscode-languageserver-textdocument",
-    "vscode-html-languageservice"
+    "vscode-html-languageservice",
+    "adm-zip"
   ]
 }

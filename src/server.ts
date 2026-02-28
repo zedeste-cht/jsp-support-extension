@@ -1,4 +1,4 @@
-import {
+﻿import {
     createConnection,
     TextDocuments,
     ProposedFeatures,
@@ -12,1139 +12,819 @@ import {
     Location,
     Range,
     Position,
-    TextDocument
 } from 'vscode-languageserver/node';
 
 import { TextDocument as TextDocumentContent } from 'vscode-languageserver-textdocument';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
+import AdmZip from 'adm-zip';
 import {
     getLanguageService as getHTMLLanguageService,
     LanguageService as HTMLLanguageService,
     CompletionConfiguration
 } from 'vscode-html-languageservice';
 
-// Create a connection for the server
+// ─── Connection & Documents ─────────────────────────────────────────────────
 const connection = createConnection(ProposedFeatures.all);
-
-// Create a document manager
 const documents: TextDocuments<TextDocumentContent> = new TextDocuments(TextDocumentContent);
-
-// Create the HTML language service
 const htmlLanguageService: HTMLLanguageService = getHTMLLanguageService();
 
-// Store project base paths
-let workspaceFolders: string[] = [];
-
+// ─── Types ──────────────────────────────────────────────────────────────────
 interface JavaSourcePath {
     modulePath: string;
     sourcePath: string;
 }
 
-let javaSourcePaths: JavaSourcePath[] = [];
-
-connection.onInitialize((params: InitializeParams) => {
-    const result: InitializeResult = {
-        capabilities: {
-            textDocumentSync: TextDocumentSyncKind.Incremental,
-            // Enable autocompletion and automatic tag closure
-            completionProvider: {
-                resolveProvider: true,
-                triggerCharacters: ['@', '<', ' ', '"', ':', '/', '.', '>', '/']
-            },
-            // Enable Go to Definition
-            definitionProvider: true
-        }
-    };
-
-    // Save workspace paths and find Java source paths
-    if (params.workspaceFolders) {
-        // Convert VS Code file URIs (which may contain percent-encoding like c%3A) to filesystem paths
-        workspaceFolders = params.workspaceFolders.map(folder => {
-            const uri = folder.uri;
-            if (uri.startsWith('file://')) {
-                try {
-                    return fileURLToPath(uri);
-                } catch (e) {
-                    // Fallback: decode and strip scheme
-                    let decoded = decodeURIComponent(uri).replace(/^file:\/\//i, '');
-                    // Normalize Windows leading slash like /c:/ -> c:/
-                    const winDrive = decoded.match(/^\/([a-zA-Z]):/);
-                    if (winDrive) {
-                        decoded = decoded.slice(1);
-                    }
-                    return decoded;
-                }
-            }
-            return uri;
-        });
-        console.log('Workspace folders:', workspaceFolders);
-        // workspaceFolders.push('c:/Users/zedes/Documents/code/jsp-support/jsptest');
-
-        // Search for Java source directories
-        const javaSourcePathsConfig = params.initializationOptions?.javaSourcePaths || [];
-        javaSourcePaths = [];
-        workspaceFolders.forEach(folder => {
-            collectJavaSourcePaths(folder, path.join(folder, 'pom.xml'), javaSourcePathsConfig);
-        });
-        console.log('All Java source paths:', javaSourcePaths);
-    }
-
-    return result;
-});
-
-// Interface for POM information
 interface PomInfo {
     sourceDirectories: string[];
     modules: string[];
 }
 
-// Function to parse pom.xml and extract source directories and modules
-function parsePomXml(pomPath: string): PomInfo {
-    if (!fs.existsSync(pomPath)) {
-        return { sourceDirectories: [], modules: [] };
+interface MavenDependency {
+    groupId: string;
+    artifactId: string;
+    version: string;
+}
+
+interface VariableDeclaration {
+    name: string;
+    type: string;
+}
+
+interface DocumentCache {
+    version: number;
+    variables: VariableDeclaration[];
+    imports: Map<string, string>; // simpleName -> fullyQualifiedName
+}
+
+// ─── State ──────────────────────────────────────────────────────────────────
+let workspaceFolders: string[] = [];
+let javaSourcePaths: JavaSourcePath[] = [];
+let mavenDependencies: MavenDependency[] = [];
+let mavenRepoPath: string = '';
+let javaHomePath: string = '';
+
+// Caches
+const documentCaches = new Map<string, DocumentCache>();
+// Cache: fullyQualifiedClassName -> { jarPath, entryName } for sources.jar lookups
+const sourceJarClassCache = new Map<string, { jarPath: string; entryName: string } | null>();
+// Cache: zip path -> AdmZip instance (avoid re-opening the same archive)
+const zipCache = new Map<string, AdmZip>();
+// Cache: extracted temp files for opening in editor
+const extractedFileCache = new Map<string, string>();
+// Temp dir for extracted sources
+let tempDir: string = '';
+
+// ─── Initialization ─────────────────────────────────────────────────────────
+connection.onInitialize((params: InitializeParams) => {
+    const result: InitializeResult = {
+        capabilities: {
+            textDocumentSync: TextDocumentSyncKind.Incremental,
+            completionProvider: {
+                resolveProvider: true,
+                triggerCharacters: ['@', '<', ' ', '"', ':', '/', '.', '>', '/']
+            },
+            definitionProvider: true
+        }
+    };
+
+    // Setup temp directory
+    tempDir = path.join(os.tmpdir(), 'jsp-support-sources');
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
     }
 
+    // Parse workspace folders
+    if (params.workspaceFolders) {
+        workspaceFolders = params.workspaceFolders.map(folder => uriToFsPath(folder.uri));
+        console.log('Workspace folders:', workspaceFolders);
+
+        // Resolve JAVA_HOME
+        javaHomePath = params.initializationOptions?.javaHome
+            || process.env.JAVA_HOME || '';
+        console.log('JAVA_HOME:', javaHomePath);
+
+        // Resolve Maven repo
+        mavenRepoPath = params.initializationOptions?.mavenRepository
+            || path.join(os.homedir(), '.m2', 'repository');
+        console.log('Maven repository:', mavenRepoPath);
+
+        // Collect Java source paths and Maven dependencies
+        const javaSourcePathsConfig: string[] = params.initializationOptions?.javaSourcePaths || [];
+        javaSourcePaths = [];
+        mavenDependencies = [];
+
+        for (const folder of workspaceFolders) {
+            collectJavaSourcePaths(folder, path.join(folder, 'pom.xml'), javaSourcePathsConfig);
+        }
+        console.log('All Java source paths:', javaSourcePaths);
+        console.log('All Maven dependencies:', mavenDependencies.length);
+    }
+
+    return result;
+});
+
+// ─── Utility Functions ──────────────────────────────────────────────────────
+
+function uriToFsPath(uri: string): string {
+    if (uri.startsWith('file://')) {
+        try {
+            return fileURLToPath(uri);
+        } catch {
+            let decoded = decodeURIComponent(uri).replace(/^file:\/\//i, '');
+            if (/^\/[a-zA-Z]:/.test(decoded)) {
+                decoded = decoded.slice(1);
+            }
+            return decoded;
+        }
+    }
+    return uri;
+}
+
+function getZip(zipPath: string): AdmZip | null {
+    if (zipCache.has(zipPath)) {
+        return zipCache.get(zipPath)!;
+    }
     try {
-        const pomContent = fs.readFileSync(pomPath, 'utf-8');
+        if (!fs.existsSync(zipPath)) { return null; }
+        const zip = new AdmZip(zipPath);
+        zipCache.set(zipPath, zip);
+        return zip;
+    } catch (e) {
+        console.error('Error opening zip:', zipPath, e);
+        return null;
+    }
+}
+
+// ─── POM Parsing ────────────────────────────────────────────────────────────
+
+function parsePomXml(pomPath: string): PomInfo & { dependencies: MavenDependency[] } {
+    if (!fs.existsSync(pomPath)) {
+        return { sourceDirectories: [], modules: [], dependencies: [] };
+    }
+    try {
+        const content = fs.readFileSync(pomPath, 'utf-8');
         const sourceDirectories: string[] = [];
         const modules: string[] = [];
+        const dependencies: MavenDependency[] = [];
 
-        // Extract <sourceDirectory> from pom.xml
-        const sourceDirRegex = /<sourceDirectory>(.*?)<\/sourceDirectory>/gs;
-        let match;
-        while ((match = sourceDirRegex.exec(pomContent)) !== null) {
-            const sourceDir = match[1].trim();
-            if (sourceDir) {
-                sourceDirectories.push(sourceDir);
+        // Extract <sourceDirectory>
+        const srcDirRe = /<sourceDirectory>(.*?)<\/sourceDirectory>/gs;
+        let m;
+        while ((m = srcDirRe.exec(content)) !== null) {
+            const dir = m[1].trim();
+            if (dir) { sourceDirectories.push(dir); }
+        }
+
+        // Extract <modules>
+        const modulesBlockRe = /<modules>([\s\S]*?)<\/modules>/g;
+        const modulesBlock = modulesBlockRe.exec(content);
+        if (modulesBlock) {
+            const moduleRe = /<module>(.*?)<\/module>/g;
+            while ((m = moduleRe.exec(modulesBlock[1])) !== null) {
+                const mod = m[1].trim();
+                if (mod) { modules.push(mod); }
             }
         }
 
-        // Extract <module> from <modules> block
-        const modulesBlockRegex = /<modules>(.*?)<\/modules>/gs;
-        const modulesBlockMatch = modulesBlockRegex.exec(pomContent);
-        if (modulesBlockMatch) {
-            const modulesContent = modulesBlockMatch[1];
-            const moduleRegex = /<module>(.*?)<\/module>/gs;
-            let moduleMatch;
-            while ((moduleMatch = moduleRegex.exec(modulesContent)) !== null) {
-                const moduleName = moduleMatch[1].trim();
-                if (moduleName) {
-                    modules.push(moduleName);
+        // Extract <dependencies> (skip dependencyManagement)
+        const depMgmtRe = /<dependencyManagement>[\s\S]*?<\/dependencyManagement>/g;
+        const contentNoDM = content.replace(depMgmtRe, '');
+        const depsRe = /<dependencies>([\s\S]*?)<\/dependencies>/g;
+        while ((m = depsRe.exec(contentNoDM)) !== null) {
+            const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
+            let dm;
+            while ((dm = depRe.exec(m[1])) !== null) {
+                const depBlock = dm[1];
+                const gid = depBlock.match(/<groupId>(.*?)<\/groupId>/)?.[1]?.trim();
+                const aid = depBlock.match(/<artifactId>(.*?)<\/artifactId>/)?.[1]?.trim();
+                const ver = depBlock.match(/<version>(.*?)<\/version>/)?.[1]?.trim();
+                if (gid && aid && ver) {
+                    dependencies.push({ groupId: gid, artifactId: aid, version: ver });
                 }
             }
         }
 
-        // If no sourceDirectory found, use default
         if (sourceDirectories.length === 0) {
             sourceDirectories.push('src/main/java');
         }
 
-        return { sourceDirectories, modules };
+        return { sourceDirectories, modules, dependencies };
     } catch (error) {
         console.error('Error parsing pom.xml:', error);
-        return { sourceDirectories: ['src/main/java'], modules: [] };
+        return { sourceDirectories: ['src/main/java'], modules: [], dependencies: [] };
     }
 }
 
-// Function to recursively collect Java source paths from POM and its modules
-function collectJavaSourcePaths(basePath: string, pomPath: string, javaSourcePathsConfig: string[]): void {
+function collectJavaSourcePaths(basePath: string, pomPath: string, configPaths: string[]): void {
     if (!fs.existsSync(pomPath)) {
-        // If no pom.xml, just use configured paths or default
-        javaSourcePathsConfig.forEach(relPath => {
+        const paths = configPaths.length > 0 ? configPaths : ['src/main/java', 'java', 'src', ''];
+        for (const relPath of paths) {
             const absPath = path.join(basePath, relPath);
             if (fs.existsSync(absPath)) {
-                javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
+                addSourcePathIfNew(basePath, absPath);
             }
-        });
-        // Also check default paths if no config: src/main/java, java, src, and root directory
-        if (javaSourcePathsConfig.length === 0) {
-            const defaultPaths = ['src/main/java', 'java', 'src', ''];
-            defaultPaths.forEach(relPath => {
-                const absPath = path.join(basePath, relPath);
-                if (fs.existsSync(absPath)) {
-                    javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
-                }
-            });
         }
         return;
     }
 
     const pomInfo = parsePomXml(pomPath);
 
-    // Add source directories from this POM
-    pomInfo.sourceDirectories.forEach(relPath => {
+    for (const relPath of pomInfo.sourceDirectories) {
         const absPath = path.join(basePath, relPath);
         if (fs.existsSync(absPath)) {
-            // Avoid duplicates
-            if (!javaSourcePaths.some(p => p.sourcePath === absPath)) {
-                console.log('Found Java source path:', absPath, 'in module:', basePath);
-                javaSourcePaths.push({ modulePath: basePath, sourcePath: absPath });
-            }
+            addSourcePathIfNew(basePath, absPath);
         }
-    });
+    }
 
-    // Recursively process sub-modules
-    pomInfo.modules.forEach(moduleName => {
-        const moduleBasePath = path.join(basePath, moduleName);
-        const modulePomPath = path.join(moduleBasePath, 'pom.xml');
-        collectJavaSourcePaths(moduleBasePath, modulePomPath, []); // Sub-modules don't use root config usually
-    });
+    // Collect Maven dependencies (deduplicate)
+    for (const dep of pomInfo.dependencies) {
+        if (!mavenDependencies.some(d => d.groupId === dep.groupId && d.artifactId === dep.artifactId && d.version === dep.version)) {
+            mavenDependencies.push(dep);
+        }
+    }
+
+    // Recurse into sub-modules
+    for (const mod of pomInfo.modules) {
+        const moduleBase = path.join(basePath, mod);
+        collectJavaSourcePaths(moduleBase, path.join(moduleBase, 'pom.xml'), []);
+    }
 }
 
-// Recursive function to find files
-function findFileRecursive(dir: string, fileName: string): string | null {
-    if (!fs.existsSync(dir)) {
-        console.log('Directory does not exist:', dir);
-        return null;
+function addSourcePathIfNew(modulePath: string, sourcePath: string): void {
+    if (!javaSourcePaths.some(p => p.sourcePath === sourcePath)) {
+        javaSourcePaths.push({ modulePath, sourcePath });
     }
-
-    const files = fs.readdirSync(dir);
-
-    // First try direct match in current directory
-    const directMatch = files.find(file => file.toLocaleLowerCase() === fileName.toLocaleLowerCase());
-    if (directMatch) {
-        const fullPath = path.join(dir, directMatch);
-        console.log('Found direct match:', fullPath);
-        return fullPath;
-    }
-
-    // Then search in subdirectories
-    for (const file of files) {
-        const filePath = path.join(dir, file);
-        const stat = fs.statSync(filePath);
-
-        if (stat.isDirectory()) {
-            const found = findFileRecursive(filePath, fileName);
-            if (found) {
-                return found;
-            }
-        }
-    }
-
-    return null;
 }
 
-// Function to find Java class definition
-async function findJavaDefinition(className: string, currentFileUri?: string): Promise<Location | null> {
-    console.log('Searching for class:', className);
+// ─── Document Caching ───────────────────────────────────────────────────────
 
-    // Convert class name to file path
-    const classFile = className.split('.').pop() + '.java';
-    const packagePath = className.split('.').slice(0, -1).join('/');
-
-    console.log('Looking for file:', classFile);
-    console.log('In package path:', packagePath);
-    console.log('Java source paths:', javaSourcePaths);
-
-    // Sort javaSourcePaths to prioritize the module containing currentFileUri
-    let sortedSourcePaths = [...javaSourcePaths];
-    if (currentFileUri && currentFileUri.startsWith('file://')) {
-        try {
-            const currentFilePath = fileURLToPath(currentFileUri);
-            console.log('Current file path:', currentFilePath);
-            sortedSourcePaths.sort((a, b) => {
-                const aIsParent = currentFilePath.startsWith(a.modulePath);
-                const bIsParent = currentFilePath.startsWith(b.modulePath);
-                if (aIsParent && !bIsParent) return -1;
-                if (!aIsParent && bIsParent) return 1;
-                // If both or neither are parents, prioritize the one with longer modulePath (more specific)
-                return b.modulePath.length - a.modulePath.length;
-            });
-        } catch (e) {
-            console.error('Error converting URI to path:', e);
-        }
+function getDocCache(doc: TextDocumentContent): DocumentCache {
+    const uri = doc.uri;
+    const existing = documentCaches.get(uri);
+    if (existing && existing.version === doc.version) {
+        return existing;
     }
-    console.log('sortedSourcePaths:', sortedSourcePaths);
 
-    for (const sourceInfo of sortedSourcePaths) {
-        const srcPath = sourceInfo.sourcePath;
-        // Try multiple possible locations
-        var possiblePaths = [
-            // Exact package path
-            packagePath ? path.join(srcPath, packagePath) : srcPath,
-        ];
-        console.log('possiblePaths:', possiblePaths);
+    const text = doc.getText();
+    const variables = parseVariableDeclarations(text);
+    const imports = parseImports(text);
+    const cache: DocumentCache = { version: doc.version, variables, imports };
+    documentCaches.set(uri, cache);
+    return cache;
+}
 
-        for (const searchPath of possiblePaths) {
-            if (fs.existsSync(searchPath)) {
-                const filePath = findFileRecursive(searchPath, classFile);
-                console.log("filePath:", filePath);
-                if (filePath) {
-                    console.log('Found file at:', filePath);
-                    const content = fs.readFileSync(filePath, 'utf-8');
-                    const lines = content.split('\n');
+function parseImports(text: string): Map<string, string> {
+    const imports = new Map<string, string>();
 
-                    // Look for package declaration
-                    let declaredPackage = '';
-                    let foundClass = false;
-
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i].trim();
-
-                        // Find package declaration
-                        if (line.startsWith('package ')) {
-                            declaredPackage = line.substring(8, line.length - 1).trim();
-                            console.log('Found package declaration:', declaredPackage);
-                        }
-
-                        // Find class definition
-                        const classMatch = line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`));
-                        if (classMatch) {
-                            console.log('Found class definition at line:', i + 1);
-                            foundClass = true;
-
-                            // Verify package if we have one
-                            if (packagePath) {
-                                const expectedPackage = packagePath.replace(/\//g, '.');
-                                console.log('declaredPackage:', declaredPackage, 'expectedPackage:', expectedPackage);
-                                if (declaredPackage === expectedPackage) {
-                                    return Location.create(
-                                        pathToFileURL(filePath).toString(),
-                                        Range.create(
-                                            Position.create(i, line.indexOf('class')),
-                                            Position.create(i, line.length)
-                                        )
-                                    );
-                                } else {
-                                    console.log('Package mismatch. Expected:', expectedPackage, 'Found:', declaredPackage, 'packagePath:', packagePath);
-                                }
-                            } else {
-                                console.log('No package path specified, accepting any package');
-                                // If no package was specified, accept any package
-                                return Location.create(
-                                    pathToFileURL(filePath).toString(),
-                                    Range.create(
-                                        Position.create(i, line.indexOf('class')),
-                                        Position.create(i, line.length)
-                                    )
-                                );
-                            }
-                        }
-                    }
-
-                    if (!foundClass) {
-                        console.log('File found but class definition not found in file');
-                    }
+    // JSP import directives: <%@page import="com.A,com.B" %>
+    // Handle multi-line directives by scanning the whole text
+    const jspImportRe = /<%@\s*page[\s\S]*?import="([^"]*?)"\s*[\s\S]*?%>/g;
+    let m;
+    while ((m = jspImportRe.exec(text)) !== null) {
+        const importList = m[1];
+        for (const entry of importList.split(',')) {
+            const fqn = entry.trim().replace(/\s+/g, '');
+            if (fqn) {
+                const simpleName = fqn.split('.').pop()!;
+                if (simpleName !== '*') {
+                    imports.set(simpleName, fqn);
                 }
             }
         }
     }
 
-    console.log('Class not found in any source path');
-    return null;
-}
-
-// Function to find Java method definition
-async function findJavaMethodDefinition(className: string, methodName: string, parameterCount: number, currentFileUri?: string): Promise<Location | null> {
-    console.log('Searching for method:', methodName, 'in class:', className, 'with parameter count:', parameterCount);
-
-    // First find the class file
-    const classFile = className.split('.').pop() + '.java';
-    const packagePath = className.split('.').slice(0, -1).join('/');
-
-    console.log('Looking for file:', classFile);
-    console.log('In package path:', packagePath);
-
-    // Sort javaSourcePaths to prioritize the module containing currentFileUri
-    let sortedSourcePaths = [...javaSourcePaths];
-    if (currentFileUri && currentFileUri.startsWith('file://')) {
-        try {
-            const currentFilePath = fileURLToPath(currentFileUri);
-            sortedSourcePaths.sort((a, b) => {
-                const aIsParent = currentFilePath.startsWith(a.modulePath);
-                const bIsParent = currentFilePath.startsWith(b.modulePath);
-                if (aIsParent && !bIsParent) return -1;
-                if (!aIsParent && bIsParent) return 1;
-                return 0;
-            });
-        } catch (e) {
-            console.error('Error converting URI to path:', e);
+    // Java-style imports inside scriptlets: import com.example.MyClass;
+    const javaImportRe = /\bimport\s+([\w.]+)\s*;/g;
+    while ((m = javaImportRe.exec(text)) !== null) {
+        const fqn = m[1];
+        const simpleName = fqn.split('.').pop()!;
+        if (simpleName !== '*') {
+            imports.set(simpleName, fqn);
         }
     }
 
-    for (const sourceInfo of sortedSourcePaths) {
-        const srcPath = sourceInfo.sourcePath;
-        // Try multiple possible locations
-        const possiblePaths = [
-            packagePath ? path.join(srcPath, packagePath) : srcPath,
-            srcPath,
-            path.join(srcPath, 'java'),
-            path.dirname(srcPath)
-        ];
-
-        for (const searchPath of possiblePaths) {
-            if (fs.existsSync(searchPath)) {
-                const filePath = findFileRecursive(searchPath, classFile);
-                if (filePath) {
-                    console.log('Found file at:', filePath);
-                    const content = fs.readFileSync(filePath, 'utf-8');
-                    const lines = content.split('\n');
-
-                    // Look for method definition
-                    let inClass = false;
-                    let bracketCount = 0;
-                    let methodStartLine = -1;
-                    let bestMatch: { line: number, paramCount: number } | null = null;
-
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i].trim();
-
-                        // Check if we're inside the correct class
-                        if (line.match(new RegExp(`\\bclass\\s+${className.split('.').pop()}\\b`))) {
-                            inClass = true;
-                            continue;
-                        }
-
-                        if (!inClass) {
-                            continue;
-                        }
-
-                        // Count brackets to know when we exit the class
-                        bracketCount += (line.match(/{/g) || []).length;
-                        bracketCount -= (line.match(/}/g) || []).length;
-                        if (bracketCount < 0) {
-                            break; // We've exited the class
-                        }
-
-                        // Look for method definition
-                        const methodMatch = line.match(new RegExp(`\\b${methodName}\\s*\\(`));
-                        if (methodMatch) {
-                            // Found a potential method, check its parameters
-                            let methodLine = line;
-                            let currentLine = i;
-
-                            // If the parameters continue on next lines, read until we find the closing parenthesis
-                            while (!methodLine.includes(')') && currentLine < lines.length - 1) {
-                                currentLine++;
-                                methodLine += ' ' + lines[currentLine].trim();
-                            }
-
-                            // Extract parameters
-                            const paramString = methodLine.substring(methodLine.indexOf('(') + 1, methodLine.indexOf(')'));
-                            const params = paramString.trim() ? paramString.split(',') : [];
-
-                            console.log('Found method with parameters:', params.length);
-
-                            // Keep track of the best match (closest to our parameter count)
-                            if (!bestMatch || Math.abs(params.length - parameterCount) < Math.abs(bestMatch.paramCount - parameterCount)) {
-                                bestMatch = {
-                                    line: i,
-                                    paramCount: params.length
-                                };
-                            }
-
-                            // If we find an exact match, return it immediately
-                            if (params.length === parameterCount) {
-                                console.log('Found exact matching method definition at line:', i + 1);
-                                return Location.create(
-                                    pathToFileURL(filePath).toString(),
-                                    Range.create(
-                                        Position.create(i, line.indexOf(methodName)),
-                                        Position.create(i, line.indexOf(methodName) + methodName.length)
-                                    )
-                                );
-                            }
-                        }
-                    }
-
-                    // If we found a close match, return it
-                    if (bestMatch) {
-                        console.log('Found best matching method definition at line:', bestMatch.line + 1);
-                        const line = lines[bestMatch.line].trim();
-                        return Location.create(
-                            pathToFileURL(filePath).toString(),
-                            Range.create(
-                                Position.create(bestMatch.line, line.indexOf(methodName)),
-                                Position.create(bestMatch.line, line.indexOf(methodName) + methodName.length)
-                            )
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    console.log('Method not found');
-    return null;
+    return imports;
 }
 
-// Interface for variable tracking
-interface VariableDeclaration {
-    name: string;
-    type: string;
-    position: Position;
-}
-
-// Function to find variable declarations in the document
-function findVariableDeclarations(text: string): VariableDeclaration[] {
+function parseVariableDeclarations(text: string): VariableDeclaration[] {
     const declarations: VariableDeclaration[] = [];
-    const lines = text.split('\n');
+    const scriptletRe = /<%[\s\S]*?%>/g;
+    let block;
 
-    let inJspScriptlet = false;
-    let multiLineScriptlet = '';
+    while ((block = scriptletRe.exec(text)) !== null) {
+        const content = block[0];
 
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // Track if we're inside a JSP scriptlet
-        if (line.includes('<%')) {
-            inJspScriptlet = true;
-            multiLineScriptlet = line;
-        } else if (inJspScriptlet) {
-            multiLineScriptlet += ' ' + line;
+        // Type var = ...
+        const declRe = /([A-Z][\w]*(?:\.[A-Z][\w]*)*)\s+([a-z][\w]*)\s*=/g;
+        let m;
+        while ((m = declRe.exec(content)) !== null) {
+            declarations.push({ name: m[2], type: m[1] });
         }
 
-        if (line.includes('%>')) {
-            inJspScriptlet = false;
-
-            // Process the complete scriptlet
-            // Pattern for standard variable declarations: Type var = new Type();
-            const declarationPattern = /([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*=\s*new\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)/g;
-
-            // Pattern for for-each loop variables: for (Type var : collection)
-            const forEachPattern = /for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*:/g;
-
-            // Pattern for method parameters: methodName(Type var, ...)
-            const paramPattern = /\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+([a-z][a-zA-Z0-9_]*)\s*[,)]/g;
-
-            let match;
-
-            // Check for standard declarations
-            while ((match = declarationPattern.exec(multiLineScriptlet)) !== null) {
-                declarations.push({
-                    name: match[2],
-                    type: match[1],
-                    position: Position.create(i, match.index)
-                });
-            }
-
-            // Check for for-each loop variables
-            while ((match = forEachPattern.exec(multiLineScriptlet)) !== null) {
-                declarations.push({
-                    name: match[2],
-                    type: match[1],
-                    position: Position.create(i, match.index)
-                });
-            }
-
-            // Check for method parameters
-            while ((match = paramPattern.exec(multiLineScriptlet)) !== null) {
-                declarations.push({
-                    name: match[2],
-                    type: match[1],
-                    position: Position.create(i, match.index)
-                });
-            }
-
-            multiLineScriptlet = '';
+        // for (Type var : collection)
+        const forRe = /for\s*\(\s*([A-Z][\w]*(?:\.[A-Z][\w]*)*)\s+([a-z][\w]*)\s*:/g;
+        while ((m = forRe.exec(content)) !== null) {
+            declarations.push({ name: m[2], type: m[1] });
         }
     }
 
     return declarations;
 }
 
-// Function to find the complete word at position
-function findWordAtPosition(text: string, offset: number): string {
-    let start = offset;
-    let end = offset;
+// ─── Class Resolution ───────────────────────────────────────────────────────
 
-    // Expand backwards
-    while (start > 0 && /[A-Za-z0-9_.]/.test(text[start - 1])) {
-        start--;
+/**
+ * Directly resolve a .java file by package path (no recursive search).
+ * e.g. "com.example.MyClass" -> srcPath/com/example/MyClass.java
+ */
+function resolveJavaFileDirect(srcPath: string, fqn: string): string | null {
+    const relativePath = fqn.replace(/\./g, path.sep) + '.java';
+    const fullPath = path.join(srcPath, relativePath);
+    if (fs.existsSync(fullPath)) {
+        return fullPath;
     }
-
-    // Expand forwards
-    while (end < text.length && /[A-Za-z0-9_.]/.test(text[end])) {
-        end++;
-    }
-
-    const fullWord = text.substring(start, end);
-    console.log('Full word found:', fullWord);
-
-    // Check if we're in an import statement
-    const importMatch = text.slice(Math.max(0, start - 50), start).match(/import\s+([^;]*?)$/);
-    if (importMatch) {
-        // We're in an import statement, return the full import path if available
-        const importPath = importMatch[1] + fullWord;
-        console.log('Found in import statement:', importPath);
-        return importPath;
-    }
-
-    // Check if we're in a JSP import directive
-    const jspImportMatch = text.slice(Math.max(0, start - 50), start).match(/<%@\s*page\s+import="([^"]*?)$/);
-    if (jspImportMatch) {
-        // We're in a JSP import directive, return the full import path
-        const importPath = jspImportMatch[1] + fullWord;
-        console.log('Found in JSP import:', importPath);
-        return importPath;
-    }
-
-    // If the word contains a dot, analyze its parts
-    if (fullWord.includes('.')) {
-        const parts = fullWord.split('.');
-        // If first part starts with uppercase, it's likely a class name
-        if (/^[A-Z]/.test(parts[0])) {
-            // If cursor is before the dot, return class name
-            if (offset - start <= parts[0].length) {
-                console.log('Returning class name:', parts[0]);
-                return parts[0];
-            }
-            // If cursor is after the dot, we're in a method
-            else {
-                console.log('In method call of class:', parts[0]);
-                return fullWord;
-            }
-        } else {
-            // It might be a variable.method call, try to find the variable's type
-            const declarations = findVariableDeclarations(text);
-            const varName = parts[0];
-            const declaration = declarations.find(d => d.name === varName);
-            if (declaration) {
-                console.log('Found variable declaration:', declaration);
-                // Return just the type name for class lookup, or type + method for method lookup
-                return offset - start <= parts[0].length ? declaration.type : declaration.type + '.' + parts.slice(1).join('.');
-            }
-        }
-    }
-
-    // Check if we're in a for loop or variable declaration
-    const lineStart = text.lastIndexOf('\n', start) + 1;
-    const lineEnd = text.indexOf('\n', end);
-    const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
-
-    // Check for class name in for loop or variable declaration
-    const forLoopMatch = currentLine.match(/for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*:/);
-    const varDeclMatch = currentLine.match(/([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*=/);
-
-    if (forLoopMatch && fullWord === forLoopMatch[1]) {
-        console.log('Found class in for loop:', forLoopMatch[1]);
-        return forLoopMatch[1];
-    }
-
-    if (varDeclMatch && fullWord === varDeclMatch[1]) {
-        console.log('Found class in variable declaration:', varDeclMatch[1]);
-        return varDeclMatch[1];
-    }
-
-    return fullWord;
-}
-
-
-// Function to find the complete word at position
-function findWordAtPositionWithBracket(text: string, offset: number): string {
-    let start = offset;
-    let end = offset;
-
-    // Expand backwards
-    while (start > 0 && /[A-Za-z0-9_.()]/.test(text[start - 1])) {
-        start--;
-    }
-
-    // Expand forwards
-    while (end < text.length && /[A-Za-z0-9_.]/.test(text[end])) {
-        end++;
-    }
-
-    const fullWord = text.substring(start, end);
-    console.log('Full word found:', fullWord);
-
-    // Check if we're in an import statement
-    const importMatch = text.slice(Math.max(0, start - 50), start).match(/import\s+([^;]*?)$/);
-    if (importMatch) {
-        // We're in an import statement, return the full import path if available
-        const importPath = importMatch[1] + fullWord;
-        console.log('Found in import statement:', importPath);
-        return importPath;
-    }
-
-    // Check if we're in a JSP import directive
-    const jspImportMatch = text.slice(Math.max(0, start - 50), start).match(/<%@\s*page\s+import="([^"]*?)$/);
-    if (jspImportMatch) {
-        // We're in a JSP import directive, return the full import path
-        const importPath = jspImportMatch[1] + fullWord;
-        console.log('Found in JSP import:', importPath);
-        return importPath;
-    }
-
-    // If the word contains a dot, analyze its parts
-    if (fullWord.includes('.')) {
-        const parts = fullWord.split('.');
-        // If first part starts with uppercase, it's likely a class name
-        if (/^[A-Z]/.test(parts[0])) {
-            // If cursor is before the dot, return class name
-            if (offset - start <= parts[0].length) {
-                console.log('Returning class name:', parts[0]);
-                return parts[0];
-            }
-            // If cursor is after the dot, we're in a method
-            else {
-                console.log('In method call of class:', parts[0]);
-                return fullWord;
-            }
-        } else {
-            // It might be a variable.method call, try to find the variable's type
-            const declarations = findVariableDeclarations(text);
-            const varName = parts[0];
-            const declaration = declarations.find(d => d.name === varName);
-            if (declaration) {
-                console.log('Found variable declaration:', declaration);
-                // Return just the type name for class lookup, or type + method for method lookup
-                return offset - start <= parts[0].length ? declaration.type : declaration.type + '.' + parts.slice(1).join('.');
-            }
-        }
-    }
-
-    // Check if we're in a for loop or variable declaration
-    const lineStart = text.lastIndexOf('\n', start) + 1;
-    const lineEnd = text.indexOf('\n', end);
-    const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
-
-    // Check for class name in for loop or variable declaration
-    const forLoopMatch = currentLine.match(/for\s*\(\s*([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*:/);
-    const varDeclMatch = currentLine.match(/([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)\s+\w+\s*=/);
-
-    if (forLoopMatch && fullWord === forLoopMatch[1]) {
-        console.log('Found class in for loop:', forLoopMatch[1]);
-        return forLoopMatch[1];
-    }
-
-    if (varDeclMatch && fullWord === varDeclMatch[1]) {
-        console.log('Found class in variable declaration:', varDeclMatch[1]);
-        return varDeclMatch[1];
-    }
-
-    return fullWord;
+    return null;
 }
 
 /**
- * 根據指定的規則從 Java 風格的方法路徑中拆分出 class 和 function 名稱。
- * 規則：
- * 1. function 永遠是最後一個點（.）後面的部分。
- * 2. 如果路徑中存在括號 "()"，則 class 是第一個括號前的部分。
- * 3. 如果路徑中不存在括號，則 class 是最後一個點前的整個部分（靜態方法呼叫）。
- * @param {string} fullPath - 完整的方法呼叫路徑字串。
- * @returns {{class: string, function: string}} - 包含 class 和 function 名稱的物件。
+ * Find the line number (0-based) where a class/interface/enum is defined.
  */
-function splitJavaPathRevised(fullPath: String) {
-    // 檢查輸入是否為有效字串
-    if (typeof fullPath !== 'string' || fullPath.trim() === '') {
-        return { class: '', function: '' };
+function findClassLine(content: string, simpleClassName: string): number {
+    const lines = content.split('\n');
+    const re = new RegExp(`\\b(?:class|interface|enum)\\s+${simpleClassName}\\b`);
+    for (let i = 0; i < lines.length; i++) {
+        if (re.test(lines[i])) {
+            return i;
+        }
     }
-
-    // 1. 找到最後一個點（.）的位置，以此為基準分割 function 和 class 路徑
-    const lastDotIndex = fullPath.lastIndexOf('.');
-
-    // 如果找不到點，可能整個字串就是一個 function，或格式不符
-    if (lastDotIndex === -1) {
-        const functionNameOnly = fullPath.split('(')[0];
-        return { class: '', function: functionNameOnly };
-    }
-
-    // 2. 取得 function 名稱
-    // 取出最後一個點之後的部分，例如 "get(arg4)"
-    const methodPart = fullPath.substring(lastDotIndex + 1);
-    // 移除括號及其內容，得到純粹的 function 名稱
-    const functionName = methodPart.split('(')[0];
-
-    // 3. 取得 class 路徑部分 (在最後一個點之前的所有內容)
-    const classPath = fullPath.substring(0, lastDotIndex);
-
-    // 4. 根據規則判斷 class 名稱
-    let className = '';
-    const firstParenIndex = classPath.indexOf('(');
-
-    if (firstParenIndex !== -1) {
-        // 情況 A: 如果路徑中包含括號，class 是第一個括號前的部分
-        className = classPath.substring(0, firstParenIndex);
-    } else {
-        // 情況 B: 如果路徑中沒有括號，class 就是整個 class 路徑 (靜態呼叫)
-        className = classPath;
-    }
-
-    return {
-        class: className,
-        function: functionName
-    };
+    return -1;
 }
 
-// Function to extract parameters from a method call considering complex expressions
-function extractMethodParameters(text: string, startPos: number): string[] {
+/**
+ * Find a method definition in Java source content.
+ */
+function findMethodLine(content: string, simpleClassName: string, methodName: string, paramCount: number): { line: number; col: number } | null {
+    const lines = content.split('\n');
+    const classRe = new RegExp(`\\b(?:class|interface|enum)\\s+${simpleClassName}\\b`);
+    let inClass = false;
     let bracketCount = 0;
-    let currentParam = '';
-    let params: string[] = [];
-    let inString = false;
-    let stringChar = '';
-    let inExpression = false;
-
-    // Skip initial whitespace
-    while (startPos < text.length && /\s/.test(text[startPos])) {
-        startPos++;
-    }
-
-    // Ensure we start with an opening parenthesis
-    if (text[startPos] !== '(') {
-        return [];
-    }
-    startPos++;
-
-    for (let i = startPos; i < text.length; i++) {
-        const char = text[i];
-        const prevChar = i > 0 ? text[i - 1] : '';
-
-        // Handle string literals
-        if ((char === '"' || char === "'") && prevChar !== '\\') {
-            if (!inString) {
-                inString = true;
-                stringChar = char;
-            } else if (char === stringChar) {
-                inString = false;
-            }
-            currentParam += char;
-            continue;
-        }
-
-        // If we're in a string, just add the character
-        if (inString) {
-            currentParam += char;
-            continue;
-        }
-
-        // Handle brackets and parentheses
-        if (char === '(' || char === '[' || char === '{') {
-            bracketCount++;
-            currentParam += char;
-            continue;
-        }
-        if (char === ')' || char === ']' || char === '}') {
-            bracketCount--;
-            if (bracketCount < 0) {
-                // We've found the closing parenthesis of the method call
-                if (currentParam.trim()) {
-                    params.push(currentParam.trim());
-                }
-                break;
-            }
-            currentParam += char;
-            continue;
-        }
-
-        // Handle operators and special characters in expressions
-        if (/[+\-*/%=<>&|!~^]/.test(char)) {
-            inExpression = true;
-            currentParam += char;
-            continue;
-        }
-
-        // Handle parameter separation
-        if (char === ',' && bracketCount === 0) {
-            params.push(currentParam.trim());
-            currentParam = '';
-            inExpression = false;
-            continue;
-        }
-
-        // Add character to current parameter
-        currentParam += char;
-    }
-
-    return params;
-}
-
-// 新增函數：在當前頁面中查找 JavaScript 函數定義
-function findJavaScriptFunction(text: string, functionName: string): Range | null {
-    const lines = text.split('\n');
+    let bestMatch: { line: number; col: number; paramDiff: number } | null = null;
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
-        // 查找函數聲明的多種模式
-        const patterns = [
-            // function functionName()
-            new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`),
-            // var functionName = function()
-            new RegExp(`\\bvar\\s+${functionName}\\s*=\\s*function\\s*\\(`),
-            // let functionName = function()
-            new RegExp(`\\blet\\s+${functionName}\\s*=\\s*function\\s*\\(`),
-            // const functionName = function()
-            new RegExp(`\\bconst\\s+${functionName}\\s*=\\s*function\\s*\\(`),
-            // functionName: function()
-            new RegExp(`\\b${functionName}\\s*:\\s*function\\s*\\(`),
-            // const functionName = () =>
-            new RegExp(`\\bconst\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
-            // let functionName = () =>
-            new RegExp(`\\blet\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
-            // var functionName = () =>
-            new RegExp(`\\bvar\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`)
-        ];
-
-        for (const pattern of patterns) {
-            const match = line.match(pattern);
-            if (match) {
-                const startChar = line.indexOf(functionName);
-                if (startChar !== -1) {
-                    console.log(`Found JavaScript function '${functionName}' at line ${i + 1}`);
-                    return Range.create(
-                        Position.create(i, startChar),
-                        Position.create(i, startChar + functionName.length)
-                    );
-                }
+        if (!inClass) {
+            if (classRe.test(line)) {
+                inClass = true;
+                bracketCount = 0;
             }
+            continue;
         }
 
-        // 也查找在 <script> 標籤內的函數
-        if (line.includes('<script')) {
-            // 從當前行開始查找，直到找到 </script>
-            let scriptContent = '';
-            let scriptStartLine = i;
+        for (const ch of line) {
+            if (ch === '{') { bracketCount++; }
+            else if (ch === '}') { bracketCount--; }
+        }
+        if (bracketCount < 0) { break; }
 
-            for (let j = i; j < lines.length; j++) {
-                scriptContent += lines[j] + '\n';
-
-                if (lines[j].includes('</script>')) {
-                    // 在腳本內容中查找函數
-                    const scriptLines = scriptContent.split('\n');
-                    for (let k = 0; k < scriptLines.length; k++) {
-                        const scriptLine = scriptLines[k];
-
-                        for (const pattern of patterns) {
-                            const match = scriptLine.match(pattern);
-                            if (match) {
-                                const startChar = scriptLine.indexOf(functionName);
-                                if (startChar !== -1) {
-                                    console.log(`Found JavaScript function '${functionName}' in script tag at line ${scriptStartLine + k + 1}`);
-                                    return Range.create(
-                                        Position.create(scriptStartLine + k, startChar),
-                                        Position.create(scriptStartLine + k, startChar + functionName.length)
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
+        const methodRe = new RegExp(`\\b${methodName}\\s*\\(`);
+        const match = methodRe.exec(line);
+        if (match) {
+            let fullSig = line.substring(match.index);
+            let j = i;
+            while (!fullSig.includes(')') && j < lines.length - 1) {
+                j++;
+                fullSig += ' ' + lines[j];
             }
+            const paramStr = fullSig.substring(fullSig.indexOf('(') + 1, fullSig.indexOf(')'));
+            const params = paramStr.trim() ? paramStr.split(',').length : 0;
+            const diff = Math.abs(params - paramCount);
+
+            if (diff === 0) {
+                return { line: i, col: match.index };
+            }
+            if (!bestMatch || diff < bestMatch.paramDiff) {
+                bestMatch = { line: i, col: match.index, paramDiff: diff };
+            }
+        }
+    }
+
+    return bestMatch ? { line: bestMatch.line, col: bestMatch.col } : null;
+}
+
+/**
+ * Sort source paths to prioritize the module containing the current file.
+ */
+function sortSourcePaths(currentFileUri: string | undefined): JavaSourcePath[] {
+    if (!currentFileUri || !currentFileUri.startsWith('file://')) {
+        return javaSourcePaths;
+    }
+    try {
+        const currentFilePath = fileURLToPath(currentFileUri);
+        return [...javaSourcePaths].sort((a, b) => {
+            const aIn = currentFilePath.startsWith(a.modulePath);
+            const bIn = currentFilePath.startsWith(b.modulePath);
+            if (aIn && !bIn) { return -1; }
+            if (!aIn && bIn) { return 1; }
+            return b.modulePath.length - a.modulePath.length;
+        });
+    } catch {
+        return javaSourcePaths;
+    }
+}
+
+// ─── Go to Definition: Workspace Sources ────────────────────────────────────
+
+async function findJavaDefinition(className: string, currentFileUri?: string): Promise<Location | null> {
+    console.log('findJavaDefinition:', className);
+    const simpleClass = className.split('.').pop()!;
+    const sorted = sortSourcePaths(currentFileUri);
+
+    for (const srcInfo of sorted) {
+        const filePath = resolveJavaFileDirect(srcInfo.sourcePath, className);
+        if (!filePath) { continue; }
+
+        const content = fs.readFileSync(filePath, 'utf-8');
+
+        // Verify package matches if FQN was given
+        if (className.includes('.')) {
+            const expectedPkg = className.substring(0, className.lastIndexOf('.'));
+            const pkgMatch = content.match(/^\s*package\s+([\w.]+)\s*;/m);
+            const actualPkg = pkgMatch ? pkgMatch[1] : '';
+            if (actualPkg !== expectedPkg) { continue; }
+        }
+
+        const line = findClassLine(content, simpleClass);
+        if (line >= 0) {
+            const lineText = content.split('\n')[line];
+            const col = lineText.indexOf(simpleClass);
+            return Location.create(
+                pathToFileURL(filePath).toString(),
+                Range.create(Position.create(line, col >= 0 ? col : 0), Position.create(line, (col >= 0 ? col : 0) + simpleClass.length))
+            );
         }
     }
 
     return null;
 }
 
-// Handle Go to Definition requests
+async function findJavaMethodDefinition(className: string, methodName: string, paramCount: number, currentFileUri?: string): Promise<Location | null> {
+    console.log('findJavaMethodDefinition:', className, methodName, paramCount);
+    const simpleClass = className.split('.').pop()!;
+    const sorted = sortSourcePaths(currentFileUri);
+
+    for (const srcInfo of sorted) {
+        const filePath = resolveJavaFileDirect(srcInfo.sourcePath, className);
+        if (!filePath) { continue; }
+
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const result = findMethodLine(content, simpleClass, methodName, paramCount);
+        if (result) {
+            return Location.create(
+                pathToFileURL(filePath).toString(),
+                Range.create(Position.create(result.line, result.col), Position.create(result.line, result.col + methodName.length))
+            );
+        }
+    }
+
+    return null;
+}
+
+// ─── Go to Definition: Maven Sources JAR ────────────────────────────────────
+
+function getSourcesJarPath(dep: MavenDependency): string {
+    const groupPath = dep.groupId.replace(/\./g, path.sep);
+    return path.join(mavenRepoPath, groupPath, dep.artifactId, dep.version,
+        `${dep.artifactId}-${dep.version}-sources.jar`);
+}
+
+/**
+ * Find which sources.jar contains a given fully qualified class name.
+ */
+function findClassInSourcesJars(fqn: string): { jarPath: string; entryName: string } | null {
+    if (sourceJarClassCache.has(fqn)) {
+        return sourceJarClassCache.get(fqn)!;
+    }
+
+    const entryName = fqn.replace(/\./g, '/') + '.java';
+
+    for (const dep of mavenDependencies) {
+        const jarPath = getSourcesJarPath(dep);
+        const zip = getZip(jarPath);
+        if (!zip) { continue; }
+
+        const entry = zip.getEntry(entryName);
+        if (entry) {
+            const result = { jarPath, entryName };
+            sourceJarClassCache.set(fqn, result);
+            return result;
+        }
+    }
+
+    sourceJarClassCache.set(fqn, null);
+    return null;
+}
+
+/**
+ * Extract a Java source from a zip/jar to a temp file and return its path.
+ */
+function extractSourceToTemp(zipPath: string, entryName: string): string | null {
+    const cacheKey = `${zipPath}::${entryName}`;
+    if (extractedFileCache.has(cacheKey)) {
+        const cached = extractedFileCache.get(cacheKey)!;
+        if (fs.existsSync(cached)) { return cached; }
+    }
+
+    const zip = getZip(zipPath);
+    if (!zip) { return null; }
+
+    const entry = zip.getEntry(entryName);
+    if (!entry) { return null; }
+
+    try {
+        const content = zip.readAsText(entry);
+        const outPath = path.join(tempDir, path.basename(zipPath, '.jar'), entryName.replace(/\//g, path.sep));
+        const outDir = path.dirname(outPath);
+        if (!fs.existsSync(outDir)) {
+            fs.mkdirSync(outDir, { recursive: true });
+        }
+        fs.writeFileSync(outPath, content, 'utf-8');
+        extractedFileCache.set(cacheKey, outPath);
+        return outPath;
+    } catch (e) {
+        console.error('Error extracting source:', e);
+        return null;
+    }
+}
+
+async function findDefinitionInSourcesJar(fqn: string, methodName?: string, paramCount?: number): Promise<Location | null> {
+    const found = findClassInSourcesJars(fqn);
+    if (!found) { return null; }
+
+    const extracted = extractSourceToTemp(found.jarPath, found.entryName);
+    if (!extracted) { return null; }
+
+    const content = fs.readFileSync(extracted, 'utf-8');
+    const simpleClass = fqn.split('.').pop()!;
+    const uri = pathToFileURL(extracted).toString();
+
+    if (methodName) {
+        const result = findMethodLine(content, simpleClass, methodName, paramCount ?? 0);
+        if (result) {
+            return Location.create(uri,
+                Range.create(Position.create(result.line, result.col), Position.create(result.line, result.col + methodName.length)));
+        }
+    }
+
+    const line = findClassLine(content, simpleClass);
+    if (line >= 0) {
+        const lineText = content.split('\n')[line];
+        const col = lineText.indexOf(simpleClass);
+        return Location.create(uri,
+            Range.create(Position.create(line, col >= 0 ? col : 0), Position.create(line, (col >= 0 ? col : 0) + simpleClass.length)));
+    }
+
+    return null;
+}
+
+// ─── Go to Definition: JDK src.zip ──────────────────────────────────────────
+
+function getJdkSrcZipPath(): string | null {
+    if (!javaHomePath) { return null; }
+    const srcZip = path.join(javaHomePath, 'lib', 'src.zip');
+    return fs.existsSync(srcZip) ? srcZip : null;
+}
+
+function isJdkClass(fqn: string): boolean {
+    return /^(java\.|javax\.|sun\.|com\.sun\.|jdk\.|org\.w3c\.|org\.xml\.)/.test(fqn);
+}
+
+async function findDefinitionInJdkSrc(fqn: string, methodName?: string, paramCount?: number): Promise<Location | null> {
+    const srcZip = getJdkSrcZipPath();
+    if (!srcZip) { return null; }
+
+    const relativePath = fqn.replace(/\./g, '/') + '.java';
+    const zip = getZip(srcZip);
+    if (!zip) { return null; }
+
+    // JDK src.zip has module prefixes like java.base/java/lang/String.java
+    let matchedEntry: string | null = null;
+    for (const entry of zip.getEntries()) {
+        if (entry.entryName.endsWith(relativePath)) {
+            matchedEntry = entry.entryName;
+            break;
+        }
+    }
+    if (!matchedEntry) { return null; }
+
+    const extracted = extractSourceToTemp(srcZip, matchedEntry);
+    if (!extracted) { return null; }
+
+    const content = fs.readFileSync(extracted, 'utf-8');
+    const simpleClass = fqn.split('.').pop()!;
+    const uri = pathToFileURL(extracted).toString();
+
+    if (methodName) {
+        const result = findMethodLine(content, simpleClass, methodName, paramCount ?? 0);
+        if (result) {
+            return Location.create(uri,
+                Range.create(Position.create(result.line, result.col), Position.create(result.line, result.col + methodName.length)));
+        }
+    }
+
+    const line = findClassLine(content, simpleClass);
+    if (line >= 0) {
+        const lineText = content.split('\n')[line];
+        const col = lineText.indexOf(simpleClass);
+        return Location.create(uri,
+            Range.create(Position.create(line, col >= 0 ? col : 0), Position.create(line, (col >= 0 ? col : 0) + simpleClass.length)));
+    }
+
+    return null;
+}
+
+// ─── Unified Definition Search ──────────────────────────────────────────────
+
+/**
+ * Search across all sources in priority order:
+ * 1. Workspace source files
+ * 2. Maven sources.jar
+ * 3. JDK src.zip
+ */
+async function findDefinitionAnywhere(fqn: string, currentFileUri?: string, methodName?: string, paramCount?: number): Promise<Location | null> {
+    // 1. Workspace sources
+    if (methodName) {
+        const wsMethod = await findJavaMethodDefinition(fqn, methodName, paramCount ?? 0, currentFileUri);
+        if (wsMethod) { return wsMethod; }
+    }
+    const wsClass = await findJavaDefinition(fqn, currentFileUri);
+    if (wsClass) { return wsClass; }
+
+    // 2. Maven sources.jar
+    const mavenResult = await findDefinitionInSourcesJar(fqn, methodName, paramCount);
+    if (mavenResult) { return mavenResult; }
+
+    // 3. JDK src.zip
+    const jdkResult = await findDefinitionInJdkSrc(fqn, methodName, paramCount);
+    if (jdkResult) { return jdkResult; }
+
+    return null;
+}
+
+// ─── Word / Context Analysis ────────────────────────────────────────────────
+
+/**
+ * Unified word extraction at cursor position.
+ * @param includeBrackets whether to include () characters (for method call detection)
+ */
+function getWordAtOffset(text: string, offset: number, includeBrackets: boolean = false): string {
+    let start = offset;
+    let end = offset;
+
+    const charRe = includeBrackets ? /[A-Za-z0-9_.()]/ : /[A-Za-z0-9_.]/;
+
+    while (start > 0 && charRe.test(text[start - 1])) { start--; }
+    while (end < text.length && /[A-Za-z0-9_.]/.test(text[end])) { end++; }
+
+    const fullWord = text.substring(start, end);
+
+    // Check if inside an import statement
+    const prefix = text.slice(Math.max(0, start - 50), start);
+    const importMatch = prefix.match(/import\s+([^;]*?)$/);
+    if (importMatch) { return importMatch[1] + fullWord; }
+
+    const jspImportMatch = prefix.match(/<%@\s*page\s+import="([^"]*?)$/);
+    if (jspImportMatch) { return jspImportMatch[1] + fullWord; }
+
+    return fullWord;
+}
+
+/**
+ * Split "ClassName.methodName" or "pkg.Class.method(args)" into class + method parts.
+ */
+function splitClassMethod(fullPath: string): { className: string; methodName: string } {
+    if (!fullPath || !fullPath.includes('.')) {
+        return { className: fullPath.split('(')[0], methodName: '' };
+    }
+
+    const lastDot = fullPath.lastIndexOf('.');
+    const methodPart = fullPath.substring(lastDot + 1).split('(')[0];
+    let classPart = fullPath.substring(0, lastDot);
+
+    const parenIdx = classPart.indexOf('(');
+    if (parenIdx !== -1) {
+        classPart = classPart.substring(0, parenIdx);
+    }
+
+    return { className: classPart, methodName: methodPart };
+}
+
+/**
+ * Count parameters in a method call from the opening parenthesis position.
+ */
+function countMethodParams(text: string, openParenPos: number): number {
+    let depth = 0;
+    let hasContent = false;
+    let paramCount = 0;
+    let inString = false;
+    let strChar = '';
+
+    for (let i = openParenPos + 1; i < text.length; i++) {
+        const ch = text[i];
+        const prev = i > 0 ? text[i - 1] : '';
+
+        if ((ch === '"' || ch === "'") && prev !== '\\') {
+            if (!inString) { inString = true; strChar = ch; }
+            else if (ch === strChar) { inString = false; }
+            hasContent = true;
+            continue;
+        }
+        if (inString) { hasContent = true; continue; }
+
+        if (ch === '(' || ch === '[' || ch === '{') { depth++; hasContent = true; continue; }
+        if (ch === ')' || ch === ']' || ch === '}') {
+            if (depth === 0) { return hasContent ? paramCount + 1 : 0; }
+            depth--;
+            hasContent = true;
+            continue;
+        }
+        if (ch === ',' && depth === 0) { paramCount++; hasContent = true; continue; }
+        if (!/\s/.test(ch)) { hasContent = true; }
+    }
+    return 0;
+}
+
+// ─── JavaScript Function Search (same page) ────────────────────────────────
+
+function findJavaScriptFunction(text: string, functionName: string): Range | null {
+    const lines = text.split('\n');
+    const patterns = [
+        new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`),
+        new RegExp(`\\b(?:var|let|const)\\s+${functionName}\\s*=\\s*function\\s*\\(`),
+        new RegExp(`\\b${functionName}\\s*:\\s*function\\s*\\(`),
+        new RegExp(`\\b(?:const|let|var)\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
+    ];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of patterns) {
+            if (pattern.test(line)) {
+                const col = line.indexOf(functionName);
+                if (col >= 0) {
+                    return Range.create(Position.create(i, col), Position.create(i, col + functionName.length));
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// ─── onDefinition Handler ───────────────────────────────────────────────────
+
 connection.onDefinition(
     async (params: TextDocumentPositionParams): Promise<Definition | null> => {
         const document = documents.get(params.textDocument.uri);
-        if (!document) {
-            console.log('Document not found');
-            return null;
-        }
+        if (!document) { return null; }
 
         const text = document.getText();
-        const position = params.position;
-        const offset = document.offsetAt(position);
+        const offset = document.offsetAt(params.position);
+        const cache = getDocCache(document);
 
-        console.log('Processing definition request at position:', position);
+        // ── Step 1: Check if cursor is inside a JSP import directive ──
+        const jspImportResult = await tryResolveJspImport(text, offset, params.textDocument.uri);
+        if (jspImportResult !== undefined) { return jspImportResult; }
 
-        // First check if we're in an import statement
-        // const lineStart = text.lastIndexOf('\n', offset) + 1;
-        // const lineEnd = text.indexOf('\n', offset);
-        // const currentLine = text.substring(lineStart, lineEnd !== -1 ? lineEnd : text.length);
+        // ── Step 2: Get the word at cursor ──
+        const word = getWordAtOffset(text, offset);
+        if (!word) { return null; }
 
-        // if (currentLine.includes('import ') || (currentLine.includes('<%@page') && currentLine.includes('import='))) {
-        //     // We're in an import line, try to get the full class name
-        //     const javaImportMatch = currentLine.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
-        //     const jspImportMatch = currentLine.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
+        console.log('Word at cursor:', word);
 
-        //     const importMatch = javaImportMatch || jspImportMatch;
-        //     if (importMatch) {
-        //         const fullClassName = importMatch[1];
-        //         console.log('Found in import statement:', fullClassName);
-        //         return await findJavaDefinition(fullClassName);
-        //     }
-        // }
-
-        // 添加對 JSP import 標籤的額外檢查
-        // 檢查游標是否在 JSP import 的類別路徑中
-        // const jspImportCheck = text.slice(Math.max(0, offset - 300), offset + 300);
-        const maxSearchRange = 300;
-        let start = -1;
-        for (let i = offset; i >= Math.max(0, offset - maxSearchRange); i--) {
-            if (text.substring(i, i + 2) === '<%') {
-                start = i;
-                break;
-            }
+        // ── Step 3: Handle dotted expressions (method calls / FQN) ──
+        if (word.includes('.')) {
+            return await handleDottedExpression(word, text, offset, params, cache);
         }
 
-        let end = -1;
-        for (let i = offset; i < Math.min(text.length, offset + maxSearchRange); i++) {
-            if (text.substring(i, i + 2) === '%>') {
-                end = i + 2;
-                break;
+        // ── Step 4: Simple class name — resolve via imports ──
+        if (/^[A-Z][\w]*$/.test(word)) {
+            const fqn = cache.imports.get(word);
+            if (fqn) {
+                const result = await findDefinitionAnywhere(fqn, params.textDocument.uri);
+                if (result) { return result; }
             }
+            // Try direct search in workspace sources
+            const wsResult = await findJavaDefinition(word, params.textDocument.uri);
+            if (wsResult) { return wsResult; }
         }
 
-        let jspImportCheck = '';
-        if (start !== -1 && end !== -1 && start < end) {
-            jspImportCheck = text.substring(start, end);
-        }
-
-        // 在此處加入新的邏輯
-        if (jspImportCheck) {
-            // 使用正則表達式找出 import 屬性的值
-            // 使用 ([\s\S]*?) 來匹配換行符，確保能找到 import 內容
-            const importRegex = /<%@\s*page[\s\S]*?import="([^"]*?)"/;
-            const importMatch = jspImportCheck.match(importRegex);
-
-            if (importMatch) {
-                // importContent 就是 "commonDO.d_CO,log.Log4SysOperation,..." 這段字串
-                const importContent = importMatch[1];
-
-                // 計算游標在 jspImportCheck 內的相對位置
-                const relativeOffsetInBlock = offset - start;
-
-                // 找出 importContent 在 jspImportCheck 內的起始位置
-                const importContentStart = jspImportCheck.indexOf(importContent);
-
-                // 計算游標在 importContent 內的精確相對位置
-                const relativeOffsetInImport = relativeOffsetInBlock - importContentStart;
-
-                // 尋找游標位置向左的最近一個逗號
-                let pkgStart = importContent.lastIndexOf(',', relativeOffsetInImport - 1);
-                if (pkgStart === -1) {
-                    // 如果沒有找到逗號，表示選中的是第一個 package
-                    pkgStart = 0;
-                } else {
-                    // 找到逗號後，從逗號的下一個位置開始
-                    pkgStart += 1;
-                }
-
-                // 尋找游標位置向右的最近一個逗號
-                let pkgEnd = importContent.indexOf(',', relativeOffsetInImport);
-                if (pkgEnd === -1) {
-                    // 如果沒有找到逗號，表示選中的是最後一個 package
-                    pkgEnd = importContent.length;
-                }
-
-                // 擷取 package 名稱
-                const selectedPackage = importContent.substring(pkgStart, pkgEnd).trim();
-
-                console.log('found package :', selectedPackage);
-                return await findJavaDefinition(selectedPackage, params.textDocument.uri);
-            }
-        }
-
-        // Get the complete word at cursor position
-        const completeWord = findWordAtPosition(text, offset);
-        console.log('Complete word at cursor:', completeWord);
-
-        // If it contains a dot, it might be a method call
-        let className = null;
-        let methodName = null;
-        if (completeWord.includes('.')) {
-            if (completeWord.startsWith('.')) {
-                console.log('Probability a method call');
-                const wordWithBracket = findWordAtPositionWithBracket(text, offset);
-                const splitPattern = splitJavaPathRevised(wordWithBracket);
-                className = splitPattern.class;
-                methodName = splitPattern.function;
-            } else {
-                const result = await findJavaDefinition(completeWord, params.textDocument.uri);
-                if (result !== null && result !== undefined) {
-                    return result;
-                } else {
-                    console.log('No definition class found for complete word');
-                }
-                [className, methodName] = completeWord.split('.');
-            }
-            // return await findJavaDefinition(completeWord, params.textDocument.uri);
-            console.log('Found potential method call:', className, methodName);
-
-            // If we have both class and method
-            if (className && methodName) {
-                // First try to find the method call in the entire context
-                console.log('Searching for method call in context');
-                const methodInContextPattern = new RegExp(`${className.replace(/\./g, '\\.')}\\.${methodName}\\s*\\([^;{]*[);]`, 'g');
-                const allMatches = [...text.matchAll(methodInContextPattern)];
-
-                // Find the closest match to our position
-                let bestMatch = null;
-                let bestDistance = Infinity;
-                const positionOffset = document.offsetAt(position);
-
-                for (const match of allMatches) {
-                    const distance = Math.abs(match.index! - positionOffset);
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        bestMatch = match;
-                    }
-                }
-
-                if (bestMatch) {
-                    console.log('Found method call in context');
-                    const params_method = extractMethodParameters(bestMatch[0], bestMatch[0].indexOf('('));
-                    console.log('Found parameters:', params_method);
-                    return await findJavaMethodDefinition(className, methodName, params_method.length, params.textDocument.uri);
-                }
-
-                // If no method call found, try method definition
-                console.log('No method call found, trying method definition directly');
-                if (methodName) {
-                    // Try to find the method definition with a default parameter count (0)
-                    // We'll let the method finder pick the best match
-                    const methodDef = await findJavaMethodDefinition(className, methodName, 0, params.textDocument.uri);
-                    if (methodDef) {
-                        console.log('Found method definition directly');
-                        return methodDef;
-                    }
-                    console.log('Method definition not found, falling back to class definition');
-                }
-                return await findJavaDefinition(className, params.textDocument.uri);
-            }
-        }
-
-        // Check if it's a class name
-        if (/^[A-Z][A-Za-z0-9_.]*$/.test(completeWord)) {
-            console.log('Word looks like a Java class name');
-
-            // First check in imports
-            const lines = text.split('\n');
-            const importLines = lines.filter(line =>
-                line.includes('import ') ||
-                (line.includes('<%@page') && line.includes('import='))
-            );
-
-            for (const line of importLines) {
-                // Check Java imports
-                const javaImportMatch = line.match(/import\s+([^;]*\.[A-Z][A-Za-z0-9_]*);/);
-                if (javaImportMatch && javaImportMatch[1].endsWith(completeWord)) {
-                    console.log('Found in Java import:', javaImportMatch[1]);
-                    return await findJavaDefinition(javaImportMatch[1], params.textDocument.uri);
-                }
-
-                // Check JSP imports
-                const jspImportMatch = line.match(/<%@\s*page[^>]*import="([^"]*\.[A-Z][A-Za-z0-9_]*)"/);
-                if (jspImportMatch && jspImportMatch[1].endsWith(completeWord)) {
-                    console.log('Found in JSP import:', jspImportMatch[1]);
-                    return await findJavaDefinition(jspImportMatch[1], params.textDocument.uri);
-                }
-            }
-
-            // If not found in imports, try direct class search
-            return await findJavaDefinition(completeWord, params.textDocument.uri);
-        }
-
-        // 如果在 Java 中找不到，嘗試在當前頁面中查找 JavaScript 函數
-        if (!completeWord.includes('.')) {
-            console.log('Searching for JavaScript function in current page:', completeWord);
-
-            const jsDefinition = findJavaScriptFunction(text, completeWord);
-            if (jsDefinition) {
-                console.log('Found JavaScript function definition');
-                return Location.create(
-                    params.textDocument.uri,
-                    jsDefinition
-                );
+        // ── Step 5: JavaScript function in same page ──
+        if (!word.includes('.')) {
+            const jsRange = findJavaScriptFunction(text, word);
+            if (jsRange) {
+                return Location.create(params.textDocument.uri, jsRange);
             }
         }
 
@@ -1152,34 +832,150 @@ connection.onDefinition(
     }
 );
 
-// Handle autocompletion
+/**
+ * Handle cursor inside a JSP <%@page import="..." %> directive.
+ * Returns Location or null if found/not-found, or undefined if cursor is not in an import.
+ */
+async function tryResolveJspImport(text: string, offset: number, uri: string): Promise<Location | null | undefined> {
+    const maxRange = 300;
+    let start = -1;
+    for (let i = offset; i >= Math.max(0, offset - maxRange); i--) {
+        if (text.substring(i, i + 2) === '<%') { start = i; break; }
+    }
+    let end = -1;
+    for (let i = offset; i < Math.min(text.length, offset + maxRange); i++) {
+        if (text.substring(i, i + 2) === '%>') { end = i + 2; break; }
+    }
+
+    if (start === -1 || end === -1 || start >= end) { return undefined; }
+
+    const block = text.substring(start, end);
+    const importRe = /<%@\s*page[\s\S]*?import="([^"]*?)"/;
+    const match = block.match(importRe);
+    if (!match) { return undefined; }
+
+    const importContent = match[1];
+    const relOffset = (offset - start) - block.indexOf(importContent);
+
+    let pkgStart = importContent.lastIndexOf(',', relOffset - 1);
+    pkgStart = pkgStart === -1 ? 0 : pkgStart + 1;
+
+    let pkgEnd = importContent.indexOf(',', relOffset);
+    if (pkgEnd === -1) { pkgEnd = importContent.length; }
+
+    const selectedPkg = importContent.substring(pkgStart, pkgEnd).trim().replace(/\s+/g, '');
+    if (!selectedPkg) { return undefined; }
+
+    console.log('JSP import selected:', selectedPkg);
+    return await findDefinitionAnywhere(selectedPkg, uri);
+}
+
+/**
+ * Handle a dotted expression like "ClassName.method" or "variable.method" or "com.pkg.Class".
+ */
+async function handleDottedExpression(
+    word: string,
+    text: string,
+    offset: number,
+    params: TextDocumentPositionParams,
+    cache: DocumentCache
+): Promise<Location | null> {
+    const uri = params.textDocument.uri;
+    const parts = word.split('.');
+    const firstPart = parts[0];
+
+    // Case A: First part starts with uppercase — could be Class.method or FQN
+    if (/^[A-Z]/.test(firstPart)) {
+        // Try as FQN class first
+        const fqnResult = await findDefinitionAnywhere(word, uri);
+        if (fqnResult) { return fqnResult; }
+
+        // Try as Class.method
+        if (parts.length >= 2) {
+            const { className, methodName } = splitClassMethod(word);
+            const fqn = cache.imports.get(className) || className;
+            return await resolveMethodCall(fqn, methodName, text, offset, uri);
+        }
+    }
+
+    // Case B: First part is lowercase — likely variable.method
+    if (/^[a-z]/.test(firstPart)) {
+        const varDecl = cache.variables.find(v => v.name === firstPart);
+        if (varDecl) {
+            const methodName = parts.length >= 2 ? parts[parts.length - 1] : '';
+            const fqn = cache.imports.get(varDecl.type) || varDecl.type;
+            if (methodName) {
+                return await resolveMethodCall(fqn, methodName, text, offset, uri);
+            } else {
+                return await findDefinitionAnywhere(fqn, uri);
+            }
+        }
+    }
+
+    // Case C: Starts with a dot — likely chained method call
+    if (word.startsWith('.')) {
+        const wordWithBracket = getWordAtOffset(text, offset, true);
+        const { className, methodName } = splitClassMethod(wordWithBracket);
+        if (className && methodName) {
+            const fqn = cache.imports.get(className) || className;
+            return await resolveMethodCall(fqn, methodName, text, offset, uri);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Resolve a method call by finding parameter count near cursor, then searching all sources.
+ */
+async function resolveMethodCall(className: string, methodName: string, text: string, offset: number, uri: string): Promise<Location | null> {
+    const escapedClass = className.replace(/\./g, '\\.');
+    const callRe = new RegExp(`${escapedClass}[.]${methodName}\\s*\\(`, 'g');
+    let bestMatch: RegExpExecArray | null = null;
+    let bestDist = Infinity;
+    let m;
+
+    while ((m = callRe.exec(text)) !== null) {
+        const dist = Math.abs(m.index - offset);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestMatch = m;
+        }
+    }
+
+    let paramCount = 0;
+    if (bestMatch) {
+        const parenPos = bestMatch.index + bestMatch[0].length - 1;
+        paramCount = countMethodParams(text, parenPos);
+    }
+
+    return await findDefinitionAnywhere(className, uri, methodName, paramCount);
+}
+
+// ─── Autocompletion ─────────────────────────────────────────────────────────
+
 connection.onCompletion(
     (textDocumentPosition: TextDocumentPositionParams): CompletionItem[] => {
         const document = documents.get(textDocumentPosition.textDocument.uri);
-        if (!document) {
-            return [];
-        }
+        if (!document) { return []; }
 
         const text = document.getText();
         const offset = document.offsetAt(textDocumentPosition.position);
 
-        // Configuration for HTML autocompletion
-        const htmlCompletionConfiguration: CompletionConfiguration = {
+        const htmlCompletionConfig: CompletionConfiguration = {
             attributeDefaultValue: 'doublequotes',
             hideAutoCompleteProposals: false
         };
 
-        // Get HTML suggestions
         const htmlResults = htmlLanguageService.doComplete(
             document,
             textDocumentPosition.position,
             htmlLanguageService.parseHTMLDocument(document),
-            htmlCompletionConfiguration
+            htmlCompletionConfig
         );
 
         let items: CompletionItem[] = htmlResults.items;
 
-        // If we are inside a JSP directive, add JSP suggestions
         const linePrefix = document.getText({
             start: { line: textDocumentPosition.position.line, character: 0 },
             end: textDocumentPosition.position
@@ -1187,78 +983,27 @@ connection.onCompletion(
 
         if (linePrefix.includes('<%@')) {
             items = items.concat([
-                {
-                    label: 'page',
-                    kind: CompletionItemKind.Keyword,
-                    data: 1
-                },
-                {
-                    label: 'include',
-                    kind: CompletionItemKind.Keyword,
-                    data: 2
-                },
-                {
-                    label: 'taglib',
-                    kind: CompletionItemKind.Keyword,
-                    data: 3
-                }
+                { label: 'page', kind: CompletionItemKind.Keyword, data: 1 },
+                { label: 'include', kind: CompletionItemKind.Keyword, data: 2 },
+                { label: 'taglib', kind: CompletionItemKind.Keyword, data: 3 },
             ]);
         }
 
-        // If we are inside a page directive, add common attributes
         if (linePrefix.includes('<%@ page')) {
             items = items.concat([
-                {
-                    label: 'language="java"',
-                    kind: CompletionItemKind.Property,
-                    data: 4
-                },
-                {
-                    label: 'contentType="text/html; charset=UTF-8"',
-                    kind: CompletionItemKind.Property,
-                    data: 5
-                },
-                {
-                    label: 'pageEncoding="UTF-8"',
-                    kind: CompletionItemKind.Property,
-                    data: 6
-                }
+                { label: 'language="java"', kind: CompletionItemKind.Property, data: 4 },
+                { label: 'contentType="text/html; charset=UTF-8"', kind: CompletionItemKind.Property, data: 5 },
+                { label: 'pageEncoding="UTF-8"', kind: CompletionItemKind.Property, data: 6 },
             ]);
         }
 
-        // Add JSP standard actions
         if (text[offset - 1] === '<' || linePrefix.trim().endsWith('<')) {
             items = items.concat([
-                {
-                    label: 'jsp:include',
-                    kind: CompletionItemKind.Snippet,
-                    data: 7,
-                    insertText: '<jsp:include page="${1:page.jsp}">\n\t${0}\n</jsp:include>'
-                },
-                {
-                    label: 'jsp:param',
-                    kind: CompletionItemKind.Snippet,
-                    data: 8,
-                    insertText: '<jsp:param name="${1:paramName}" value="${2:paramValue}"/>'
-                },
-                {
-                    label: 'jsp:useBean',
-                    kind: CompletionItemKind.Snippet,
-                    data: 9,
-                    insertText: '<jsp:useBean id="${1:beanName}" class="${2:package.ClassName}" scope="${3|page,request,session,application|}"/>'
-                },
-                {
-                    label: 'jsp:setProperty',
-                    kind: CompletionItemKind.Snippet,
-                    data: 10,
-                    insertText: '<jsp:setProperty name="${1:beanName}" property="${2:propertyName}" value="${3:value}"/>'
-                },
-                {
-                    label: 'jsp:getProperty',
-                    kind: CompletionItemKind.Snippet,
-                    data: 11,
-                    insertText: '<jsp:getProperty name="${1:beanName}" property="${2:propertyName}"/>'
-                }
+                { label: 'jsp:include', kind: CompletionItemKind.Snippet, data: 7 },
+                { label: 'jsp:param', kind: CompletionItemKind.Snippet, data: 8 },
+                { label: 'jsp:useBean', kind: CompletionItemKind.Snippet, data: 9 },
+                { label: 'jsp:setProperty', kind: CompletionItemKind.Snippet, data: 10 },
+                { label: 'jsp:getProperty', kind: CompletionItemKind.Snippet, data: 11 },
             ]);
         }
 
@@ -1266,51 +1011,22 @@ connection.onCompletion(
     }
 );
 
-// Handle autocompletion resolution
 connection.onCompletionResolve(
     (item: CompletionItem): CompletionItem => {
-        const document = documents.get(item.data?.documentUri);
-        if (document && item.data?.tagName) {
-            const htmlDocument = htmlLanguageService.parseHTMLDocument(document);
-            const tag = htmlLanguageService.doTagComplete(document, item.data.position, htmlDocument);
-            if (tag) {
-                item.insertText = tag;
-            }
-        }
-
-        // Handle other autocompletion resolution cases
         switch (item.data) {
-            case 1:
-                item.detail = 'JSP Page Directive';
-                item.documentation = 'Defines page-dependent attributes and communicates these to the JSP container';
-                break;
-            case 7:
-                item.detail = 'JSP Include Action';
-                item.documentation = 'Includes the content of another JSP page at runtime';
-                break;
-            case 8:
-                item.detail = 'JSP Parameter';
-                item.documentation = 'Passes parameters to an included page';
-                break;
-            case 9:
-                item.detail = 'JSP UseBean Action';
-                item.documentation = 'Declares and instantiates a JavaBean component';
-                break;
-            case 10:
-                item.detail = 'JSP SetProperty Action';
-                item.documentation = 'Sets the value of a property in a JavaBean component';
-                break;
-            case 11:
-                item.detail = 'JSP GetProperty Action';
-                item.documentation = 'Gets the value of a property in a JavaBean component';
-                break;
+            case 1: item.detail = 'JSP Page Directive'; item.documentation = 'Defines page-dependent attributes'; break;
+            case 7: item.detail = 'JSP Include Action'; item.documentation = 'Includes content of another JSP page at runtime'; break;
+            case 8: item.detail = 'JSP Parameter'; item.documentation = 'Passes parameters to an included page'; break;
+            case 9: item.detail = 'JSP UseBean Action'; item.documentation = 'Declares and instantiates a JavaBean'; break;
+            case 10: item.detail = 'JSP SetProperty Action'; item.documentation = 'Sets the value of a JavaBean property'; break;
+            case 11: item.detail = 'JSP GetProperty Action'; item.documentation = 'Gets the value of a JavaBean property'; break;
         }
         return item;
     }
 );
 
-// Make the document manager listen on the connection
-documents.listen(connection);
+// ─── Start ──────────────────────────────────────────────────────────────────
 
-// Start the language server
+documents.listen(connection);
 connection.listen();
+

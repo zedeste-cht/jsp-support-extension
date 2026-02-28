@@ -42,7 +42,9 @@ export async function activate(context: vscode.ExtensionContext) {
 			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{jsp,jspx,jspf}')
 		},
 		initializationOptions: {
-			javaSourcePaths: vscode.workspace.getConfiguration('jsp-support').get('javaSourcePaths')
+			javaSourcePaths: vscode.workspace.getConfiguration('jsp-support').get('javaSourcePaths'),
+			javaHome: vscode.workspace.getConfiguration('jsp-support').get('javaHome') || process.env.JAVA_HOME || '',
+			mavenRepository: vscode.workspace.getConfiguration('jsp-support').get('mavenRepository') || ''
 		}
 	};
 
