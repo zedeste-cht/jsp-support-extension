@@ -4,6 +4,9 @@
     "fileTypes": ["jsp", "jspx", "jspf"],
     "patterns": [
         {
+            "include": "#jsp-comments"
+        },
+        {
             "include": "#jsp-directives"
         },
         {
@@ -23,6 +26,25 @@
         }
     ],
     "repository": {
+        "jsp-comments": {
+            "patterns": [
+                {
+                    "name": "comment.block.jsp",
+                    "begin": "<%--",
+                    "end": "--%>",
+                    "beginCaptures": {
+                        "0": {
+                            "name": "punctuation.definition.comment.begin.jsp"
+                        }
+                    },
+                    "endCaptures": {
+                        "0": {
+                            "name": "punctuation.definition.comment.end.jsp"
+                        }
+                    }
+                }
+            ]
+        },
         "jsp-directives": {
             "patterns": [
                 {
@@ -118,6 +140,10 @@
                     "end": "(?:\\s|\\n)*%>",
                     "patterns": [
                         {
+                            "name": "comment.line.double-slash.java",
+                            "match": "//(?:(?!%>).)*"
+                        },
+                        {
                             "include": "source.java"
                         }
                     ]
@@ -132,6 +158,10 @@
                     "end": "%>",
                     "patterns": [
                         {
+                            "name": "comment.line.double-slash.java",
+                            "match": "//(?:(?!%>).)*"
+                        },
+                        {
                             "include": "source.java"
                         }
                     ]
@@ -145,6 +175,10 @@
                     "begin": "<%!",
                     "end": "%>",
                     "patterns": [
+                        {
+                            "name": "comment.line.double-slash.java",
+                            "match": "//(?:(?!%>).)*"
+                        },
                         {
                             "include": "source.java"
                         }
