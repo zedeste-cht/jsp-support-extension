@@ -822,16 +822,37 @@ function countMethodParams(text: string, openParenPos: number): number {
     return 0;
 }
 
-// ─── JavaScript Function Search (same page) ────────────────────────────────
+// ─── JavaScript Function Search ─────────────────────────────────────────────
 
-function findJavaScriptFunction(text: string, functionName: string): Range | null {
-    const lines = text.split('\n');
-    const patterns = [
-        new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`),
-        new RegExp(`\\b(?:var|let|const)\\s+${functionName}\\s*=\\s*function\\s*\\(`),
-        new RegExp(`\\b${functionName}\\s*:\\s*function\\s*\\(`),
-        new RegExp(`\\b(?:const|let|var)\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>`),
+/** Build regex patterns for matching JS function/method definitions */
+function buildJsFunctionPatterns(functionName: string): RegExp[] {
+    const escaped = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return [
+        // function functionName(...)
+        new RegExp(`\\bfunction\\s+${escaped}\\s*\\(`),
+        // var/let/const functionName = function(...)
+        new RegExp(`\\b(?:var|let|const)\\s+${escaped}\\s*=\\s*function\\s*\\(`),
+        // functionName: function(...)
+        new RegExp(`\\b${escaped}\\s*:\\s*function\\s*\\(`),
+        // const/let/var functionName = (...) =>
+        new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:\\([^)]*\\)|[A-Za-z_$][A-Za-z0-9_$]*)\\s*=>`),
+        // Object shorthand method: functionName(...) { (inside object/class)
+        new RegExp(`\\b${escaped}\\s*\\([^)]*\\)\\s*\\{`),
+        // Prototype: Something.prototype.functionName = function
+        new RegExp(`\\.prototype\\.${escaped}\\s*=\\s*function`),
+        // Static-like: Something.functionName = function
+        new RegExp(`\\w+\\.${escaped}\\s*=\\s*function`),
+        // export function / export default function
+        new RegExp(`\\bexport\\s+(?:default\\s+)?function\\s+${escaped}\\s*\\(`),
+        // export const/let/var functionName =
+        new RegExp(`\\bexport\\s+(?:const|let|var)\\s+${escaped}\\s*=`),
     ];
+}
+
+/** Search for a JS function definition in text content, returns Range if found */
+function findJsFunctionInText(text: string, functionName: string): Range | null {
+    const lines = text.split('\n');
+    const patterns = buildJsFunctionPatterns(functionName);
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -844,6 +865,334 @@ function findJavaScriptFunction(text: string, functionName: string): Range | nul
             }
         }
     }
+    return null;
+}
+
+/** Search for a JS function in the same JSP page */
+function findJavaScriptFunction(text: string, functionName: string): Range | null {
+    return findJsFunctionInText(text, functionName);
+}
+
+/** Search for a JS object/class method in the same JSP page */
+function findJsMethodInSamePage(text: string, objectName: string, methodName: string): Range | null {
+    const lines = text.split('\n');
+
+    // 1. Look for class ObjectName { ... methodName() {} }
+    const classRe = new RegExp(`\\bclass\\s+${objectName}\\b`);
+    for (let i = 0; i < lines.length; i++) {
+        if (classRe.test(lines[i])) {
+            let bracketCount = 0;
+            let inClass = false;
+            for (let j = i; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') { bracketCount++; inClass = true; }
+                    if (ch === '}') { bracketCount--; }
+                }
+                if (inClass && bracketCount <= 0) { break; }
+                const methodRe = new RegExp(`\\b${methodName}\\s*\\(`);
+                if (j > i && methodRe.test(lines[j])) {
+                    const col = lines[j].indexOf(methodName);
+                    if (col >= 0) {
+                        return Range.create(Position.create(j, col), Position.create(j, col + methodName.length));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Look for ObjectName.prototype.methodName = or ObjectName.methodName =
+    const protoRe = new RegExp(`\\b${objectName}\\.prototype\\.${methodName}\\s*=`);
+    const staticRe = new RegExp(`\\b${objectName}\\.${methodName}\\s*=`);
+    for (let i = 0; i < lines.length; i++) {
+        if (protoRe.test(lines[i]) || staticRe.test(lines[i])) {
+            const col = lines[i].indexOf(methodName, lines[i].indexOf(objectName));
+            if (col >= 0) {
+                return Range.create(Position.create(i, col), Position.create(i, col + methodName.length));
+            }
+        }
+    }
+
+    // 3. Look for var/let/const objectName = { ... methodName: function or methodName() {} }
+    const objDeclRe = new RegExp(`\\b(?:var|let|const)\\s+${objectName}\\s*=\\s*\\{`);
+    for (let i = 0; i < lines.length; i++) {
+        if (objDeclRe.test(lines[i])) {
+            let bracketCount = 0;
+            let inObj = false;
+            for (let j = i; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') { bracketCount++; inObj = true; }
+                    if (ch === '}') { bracketCount--; }
+                }
+                if (inObj && bracketCount <= 0) { break; }
+                const propMethodRe = new RegExp(`\\b${methodName}\\s*(?::|\\()`);
+                if (propMethodRe.test(lines[j])) {
+                    const col = lines[j].indexOf(methodName);
+                    if (col >= 0) {
+                        return Range.create(Position.create(j, col), Position.create(j, col + methodName.length));
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/** Extract <script src="..."> paths from JSP text */
+function extractScriptSrcPaths(text: string): string[] {
+    const paths: string[] = [];
+    // Match <script ... src="..."> (handles single/double quotes, EL expressions)
+    const scriptRe = /<script[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+    let m;
+    while ((m = scriptRe.exec(text)) !== null) {
+        let srcPath = m[1].trim();
+        // Strip EL expressions like ${pageContext.request.contextPath}
+        srcPath = srcPath.replace(/\$\{[^}]*\}/g, '');
+        // Strip leading slash or dots
+        srcPath = srcPath.replace(/^\/+/, '');
+        if (srcPath) {
+            paths.push(srcPath);
+        }
+    }
+    return paths;
+}
+
+/** Common webapp root directory patterns in Java projects */
+const WEBAPP_ROOTS = [
+    'src/main/webapp',
+    'WebContent',
+    'webapp',
+    'web',
+    'public',
+    'static',
+    'src/main/resources/static',
+    'src/main/resources/public',
+];
+
+/** Resolve a script src path to an absolute file path */
+function resolveScriptPath(srcPath: string, jspFileUri: string): string[] {
+    const candidates: string[] = [];
+
+    // 1. Relative to the JSP file directory
+    try {
+        const jspFilePath = fileURLToPath(jspFileUri);
+        const jspDir = path.dirname(jspFilePath);
+        const relative = path.join(jspDir, srcPath);
+        if (fs.existsSync(relative)) {
+            candidates.push(relative);
+        }
+    } catch { /* ignore */ }
+
+    // 2. Relative to webapp roots in each workspace folder
+    for (const wsFolder of workspaceFolders) {
+        // Direct from workspace root
+        const directPath = path.join(wsFolder, srcPath);
+        if (fs.existsSync(directPath)) {
+            candidates.push(directPath);
+        }
+
+        // From common webapp directories
+        for (const webRoot of WEBAPP_ROOTS) {
+            const webAppPath = path.join(wsFolder, webRoot, srcPath);
+            if (fs.existsSync(webAppPath)) {
+                candidates.push(webAppPath);
+            }
+        }
+    }
+
+    // Deduplicate
+    return [...new Set(candidates)];
+}
+
+/** Directories to skip when scanning for JS files */
+const JS_SCAN_SKIP_DIRS = new Set([
+    'node_modules', '.git', 'target', 'build', 'dist', '.idea',
+    '.settings', 'bin', '.mvn', 'WEB-INF/classes', 'META-INF',
+    'out', '.next', '.nuxt', 'coverage',
+]);
+
+/** Recursively collect .js files under a directory (with depth limit) */
+function collectJsFiles(dir: string, depth: number = 0, maxDepth: number = 8): string[] {
+    if (depth > maxDepth) { return []; }
+    const results: string[] = [];
+
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return results;
+    }
+
+    for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith('.js')) {
+            results.push(path.join(dir, entry.name));
+        } else if (entry.isDirectory() && !JS_SCAN_SKIP_DIRS.has(entry.name)) {
+            results.push(...collectJsFiles(path.join(dir, entry.name), depth + 1, maxDepth));
+        }
+    }
+
+    return results;
+}
+
+// Cache for JS files per workspace
+let jsFileCache: string[] | null = null;
+
+/** Get all JS files in the workspace (cached) */
+function getWorkspaceJsFiles(): string[] {
+    if (jsFileCache) { return jsFileCache; }
+
+    const files: string[] = [];
+    for (const wsFolder of workspaceFolders) {
+        // Prioritize webapp directories
+        for (const webRoot of WEBAPP_ROOTS) {
+            const webDir = path.join(wsFolder, webRoot);
+            if (fs.existsSync(webDir)) {
+                files.push(...collectJsFiles(webDir));
+            }
+        }
+        // Also check root for standalone JS
+        files.push(...collectJsFiles(wsFolder, 0, 3)); // shallow root scan
+    }
+
+    // Deduplicate
+    jsFileCache = [...new Set(files)];
+    return jsFileCache;
+}
+
+/** Invalidate JS file cache when documents change */
+function invalidateJsFileCache(): void {
+    jsFileCache = null;
+}
+
+/**
+ * Search for a JS function in external JS files referenced by the JSP.
+ * Priority: script-src referenced files first, then workspace JS files.
+ */
+function findJsFunctionInExternalFiles(
+    text: string,
+    functionName: string,
+    jspFileUri: string
+): Location | null {
+    // 1. Search in <script src> referenced files
+    const srcPaths = extractScriptSrcPaths(text);
+    for (const srcPath of srcPaths) {
+        const resolvedPaths = resolveScriptPath(srcPath, jspFileUri);
+        for (const filePath of resolvedPaths) {
+            try {
+                const content = fs.readFileSync(filePath, 'utf-8');
+                const range = findJsFunctionInText(content, functionName);
+                if (range) {
+                    return Location.create(pathToFileURL(filePath).toString(), range);
+                }
+            } catch { /* ignore read errors */ }
+        }
+    }
+
+    // 2. Fallback: search all workspace JS files
+    const wsJsFiles = getWorkspaceJsFiles();
+    for (const filePath of wsJsFiles) {
+        try {
+            const content = fs.readFileSync(filePath, 'utf-8');
+            const range = findJsFunctionInText(content, functionName);
+            if (range) {
+                return Location.create(pathToFileURL(filePath).toString(), range);
+            }
+        } catch { /* ignore */ }
+    }
+
+    return null;
+}
+
+/**
+ * Search for a JS method on an object/class/prototype in external files.
+ * e.g., MyObj.myMethod, SomeClass.prototype.method
+ */
+function findJsMethodInExternalFiles(
+    text: string,
+    objectName: string,
+    methodName: string,
+    jspFileUri: string
+): Location | null {
+    const patterns = [
+        // class ObjectName { methodName() {} }
+        new RegExp(`\\bclass\\s+${objectName}\\b`),
+        // ObjectName.prototype.methodName =
+        new RegExp(`\\b${objectName}\\.prototype\\.${methodName}\\s*=`),
+        // ObjectName.methodName =
+        new RegExp(`\\b${objectName}\\.${methodName}\\s*=`),
+    ];
+
+    const searchInFile = (filePath: string, content: string): Location | null => {
+        const lines = content.split('\n');
+
+        // For class definitions, find the method inside the class body
+        const classRe = new RegExp(`\\bclass\\s+${objectName}\\b`);
+        for (let i = 0; i < lines.length; i++) {
+            if (classRe.test(lines[i])) {
+                // Found the class, now search for method inside it
+                let bracketCount = 0;
+                let inClass = false;
+                for (let j = i; j < lines.length; j++) {
+                    const line = lines[j];
+                    for (const ch of line) {
+                        if (ch === '{') { bracketCount++; inClass = true; }
+                        if (ch === '}') { bracketCount--; }
+                    }
+                    if (inClass && bracketCount <= 0) { break; }
+
+                    const methodRe = new RegExp(`\\b${methodName}\\s*\\(`);
+                    if (j > i && methodRe.test(line)) {
+                        const col = line.indexOf(methodName);
+                        if (col >= 0) {
+                            const uri = pathToFileURL(filePath).toString();
+                            return Location.create(uri,
+                                Range.create(Position.create(j, col), Position.create(j, col + methodName.length)));
+                        }
+                    }
+                }
+            }
+        }
+
+        // For prototype/static assignments
+        for (let i = 0; i < lines.length; i++) {
+            for (const pattern of patterns.slice(1)) { // skip class pattern
+                if (pattern.test(lines[i])) {
+                    const col = lines[i].indexOf(methodName);
+                    if (col >= 0) {
+                        const uri = pathToFileURL(filePath).toString();
+                        return Location.create(uri,
+                            Range.create(Position.create(i, col), Position.create(i, col + methodName.length)));
+                    }
+                }
+            }
+        }
+
+        return null;
+    };
+
+    // 1. Search in <script src> referenced files
+    const srcPaths = extractScriptSrcPaths(text);
+    for (const srcPath of srcPaths) {
+        const resolvedPaths = resolveScriptPath(srcPath, jspFileUri);
+        for (const filePath of resolvedPaths) {
+            try {
+                const content = fs.readFileSync(filePath, 'utf-8');
+                const result = searchInFile(filePath, content);
+                if (result) { return result; }
+            } catch { /* ignore */ }
+        }
+    }
+
+    // 2. Fallback: workspace JS files
+    const wsJsFiles = getWorkspaceJsFiles();
+    for (const filePath of wsJsFiles) {
+        try {
+            const content = fs.readFileSync(filePath, 'utf-8');
+            const result = searchInFile(filePath, content);
+            if (result) { return result; }
+        } catch { /* ignore */ }
+    }
+
     return null;
 }
 
@@ -870,7 +1219,33 @@ connection.onDefinition(
 
         // ── Step 3: Handle dotted expressions (method calls / FQN) ──
         if (word.includes('.')) {
-            return await handleDottedExpression(word, text, offset, params, cache);
+            const javaResult = await handleDottedExpression(word, text, offset, params, cache);
+            if (javaResult) { return javaResult; }
+
+            // Fallback: try JS object.method resolution
+            const parts = word.split('.');
+            if (parts.length === 2) {
+                const [objName, methodName] = parts;
+                // Search same page for JS class/object method
+                const jsMethodRange = findJsMethodInSamePage(text, objName, methodName);
+                if (jsMethodRange) {
+                    return Location.create(params.textDocument.uri, jsMethodRange);
+                }
+                // Search external JS files
+                const externalResult = findJsMethodInExternalFiles(text, objName, methodName, params.textDocument.uri);
+                if (externalResult) { return externalResult; }
+            }
+            // Also try just the last part as a plain function name
+            const lastPart = parts[parts.length - 1];
+            if (lastPart) {
+                const jsRange = findJavaScriptFunction(text, lastPart);
+                if (jsRange) {
+                    return Location.create(params.textDocument.uri, jsRange);
+                }
+                const extResult = findJsFunctionInExternalFiles(text, lastPart, params.textDocument.uri);
+                if (extResult) { return extResult; }
+            }
+            return null;
         }
 
         // ── Step 4: Simple class name — resolve via imports ──
@@ -885,13 +1260,15 @@ connection.onDefinition(
             if (wsResult) { return wsResult; }
         }
 
-        // ── Step 5: JavaScript function in same page ──
-        if (!word.includes('.')) {
-            const jsRange = findJavaScriptFunction(text, word);
-            if (jsRange) {
-                return Location.create(params.textDocument.uri, jsRange);
-            }
+        // ── Step 5: JavaScript function — same page ──
+        const jsRange = findJavaScriptFunction(text, word);
+        if (jsRange) {
+            return Location.create(params.textDocument.uri, jsRange);
         }
+
+        // ── Step 6: JavaScript function — external JS files ──
+        const externalJsResult = findJsFunctionInExternalFiles(text, word, params.textDocument.uri);
+        if (externalJsResult) { return externalJsResult; }
 
         return null;
     }
@@ -1089,6 +1466,11 @@ connection.onCompletionResolve(
         return item;
     }
 );
+
+// ─── Document Change Listener (invalidate JS cache) ────────────────────────
+documents.onDidChangeContent(() => {
+    invalidateJsFileCache();
+});
 
 // ─── Start ──────────────────────────────────────────────────────────────────
 
