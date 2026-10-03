@@ -1,6 +1,4 @@
 // A launch configuration that compiles the extension and then opens it inside a new window
-// Use IntelliSense to learn about possible attributes.
-// Hover to view descriptions of existing attributes.
 // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
 {
 	"version": "0.2.0",
@@ -18,28 +16,17 @@
 			"preLaunchTask": "${defaultBuildTask}"
 		},
 		{
-			"name": "Attach to Language Server (6009)",
-			"type": "node",
-			"request": "attach",
-			"port": 6009,
-			"restart": true,
-			"timeout": 20000,
-			"sourceMaps": true,
+			"name": "Run Extension (jsptest sample)",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}",
+				"${workspaceFolder}/../jsptest/servlet_maven_demo"
+			],
 			"outFiles": [
 				"${workspaceFolder}/dist/**/*.js"
 			],
-			"skipFiles": [
-				"<node_internals>/**"
-			]
-		}
-	],
-	"compounds": [
-		{
-			"name": "Extension + Server (Attach)",
-			"configurations": [
-				"Run Extension",
-				"Attach to Language Server (6009)"
-			]
+			"preLaunchTask": "${defaultBuildTask}"
 		}
 	]
 }

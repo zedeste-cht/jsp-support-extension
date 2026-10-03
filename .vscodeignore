@@ -12,3 +12,8 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+test-fixtures/**
+resources/**
+.github/**
+test-workspace/**
+**/*.vsix
