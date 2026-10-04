@@ -69,12 +69,21 @@ export class JdtLocator implements ClassLocator, vscode.Disposable {
 
         const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
             'vscode.executeWorkspaceSymbolProvider', fqn) ?? [];
-        // For a qualified query jdt.ls reports the FQN as the name; for a simple
-        // query, the simple name. Accept both.
+        // redhat.java's middleware rewrites names of qualified queries to
+        // `${containerName}.${name}`, so depending on the server state the name is
+        // simple ("List") or qualified (possibly more than once). Compare the last
+        // segment only.
         const matches = symbols.filter(s =>
-            (s.name === fqn || s.name === simple) && (s.containerName ?? '') === pkg && TYPE_KINDS.has(s.kind)
+            s.name.substring(s.name.lastIndexOf('.') + 1) === simple && (s.containerName ?? '') === pkg && TYPE_KINDS.has(s.kind)
             && (s.location.uri.scheme === 'jdt' || s.location.uri.scheme === 'file'));
-        if (!matches.length) { return null; }
+        if (!matches.length) {
+            // Same package but an unexpected name shape: worth knowing about.
+            const odd = symbols.filter(s => (s.containerName ?? '') === pkg && s.name.endsWith(simple) && TYPE_KINDS.has(s.kind));
+            if (odd.length) {
+                this.log.appendLine(`jdt.ls: no match for ${fqn} among ${odd.slice(0, 3).map(s => `${s.name} [${s.location.uri.scheme}]`).join(', ')}`);
+            }
+            return null;
+        }
 
         const model = this.model();
         const ranked = model

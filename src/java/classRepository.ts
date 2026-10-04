@@ -56,6 +56,7 @@ export class ClassRepository {
         private readonly locators: ClassLocator[],
         /** Returns a cache key for the module scope of a file. */
         private readonly scopeOf: (fromFile?: string) => string = () => '',
+        private readonly onError: (message: string) => void = m => console.error(`[jsp-support] ${m}`),
     ) { }
 
     clear(): void {
@@ -139,7 +140,7 @@ export class ClassRepository {
                     const src = await loc.locate(fqn, fromFile);
                     if (src) { return src; }
                 } catch (e) {
-                    console.error(`[jsp-support] locator ${loc.name} failed for ${fqn}:`, e);
+                    this.onError(`locator ${loc.name} failed for ${fqn}: ${(e as Error)?.stack ?? e}`);
                 }
             }
             return null;

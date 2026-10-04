@@ -33,7 +33,7 @@ export class IndexLocator implements ClassLocator {
         private readonly model: () => ProjectModel | undefined,
         private readonly javaHome: () => string | undefined,
         private readonly parts: IndexPart[] = ['sources', 'jars'],
-        /** When true, only loose jars are indexed (build-tool classpath and JDK are skipped). */
+        /** When true, only loose jars are indexed (build-tool classpath is skipped). */
         private readonly looseJarsOnly: () => boolean = () => false,
     ) {
         this.name = `index(${parts.join('+')})`;
@@ -66,7 +66,8 @@ export class IndexLocator implements ClassLocator {
             }
         }
 
-        if (this.looseJarsOnly()) { return null; }
+        // The JDK is checked even with jdt.ls up: src.zip is cheap and covers
+        // lookups jdt.ls cannot answer (e.g. its symbol search still warming up).
         const jdkHit = (await this.jdk()).get(rel);
         return jdkHit ? this.readHit(jdkHit) : null;
     }

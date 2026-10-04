@@ -46,11 +46,12 @@ export class JspSupport implements vscode.Disposable {
         const javaHome = () => this.javaHome();
         this.sources = new IndexLocator(getModel, javaHome, ['sources']);
         this.jdt = new JdtLocator(getModel, this.log);
-        // With jdt.ls up, Maven/Gradle classpaths and the JDK are its job; the jar
-        // index then only covers loose jars (WEB-INF/lib, lib/) jdt.ls may not know.
+        // With jdt.ls up, Maven/Gradle classpaths are its job; the jar index then
+        // only covers loose jars (WEB-INF/lib, lib/) jdt.ls may not know, plus the
+        // JDK src.zip as a fallback.
         this.jars = new IndexLocator(getModel, javaHome, ['jars'], () => this.jdt.isReady);
         const locators: ClassLocator[] = [this.sources, this.jdt, this.jars];
-        this.repo = new ClassRepository(locators, f => this.model?.scopeKey(f) ?? '');
+        this.repo = new ClassRepository(locators, f => this.model?.scopeKey(f) ?? '', m => this.log.appendLine(m));
         this.java = new JavaResolver(this.repo);
         this.js = new JsDefinitionService(() => this.loadTypeScript());
 
