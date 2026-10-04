@@ -1,152 +1,30 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import {
-	LanguageClient,
-	LanguageClientOptions,
-	ServerOptions,
-	TransportKind,
-	Location,
-	Position
-} from 'vscode-languageclient/node';
-import * as path from 'path';
+import { JspSupport } from './jspSupport';
+import { JspDefinitionProvider } from './providers/definitionProvider';
+import { JspCompletionProvider } from './providers/completionProvider';
+import { JAR_SCHEME } from './locators/indexLocator';
+import { ZipFile } from './util/zip';
 
-let client: LanguageClient;
+const SELECTOR: vscode.DocumentSelector = [{ language: 'jsp', scheme: 'file' }, { language: 'jsp', scheme: 'untitled' }];
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
-export async function activate(context: vscode.ExtensionContext) {
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('JSP Language Support extension is now active!');
+export function activate(context: vscode.ExtensionContext): void {
+    const support = new JspSupport(context);
 
-	// Configuración del servidor de lenguaje
-	const serverModule = context.asAbsolutePath(path.join('dist', 'server.js'));
-	
-	const serverOptions: ServerOptions = {
-		run: {
-			module: serverModule,
-			transport: TransportKind.ipc
-		},
-		debug: {
-			module: serverModule,
-			transport: TransportKind.ipc,
-			options: { execArgv: ['--nolazy', '--inspect=6009'] }
-		}
-	};
-
-	// Opciones del cliente
-	const clientOptions: LanguageClientOptions = {
-		documentSelector: [{ scheme: 'file', language: 'jsp' }],
-		synchronize: {
-			fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{jsp,jspx,jspf}')
-		},
-		initializationOptions: {
-			javaSourcePaths: vscode.workspace.getConfiguration('jsp-support').get('javaSourcePaths'),
-			javaHome: vscode.workspace.getConfiguration('jsp-support').get('javaHome') || process.env.JAVA_HOME || '',
-			mavenRepository: vscode.workspace.getConfiguration('jsp-support').get('mavenRepository') || ''
-		}
-	};
-
-	// Crear el cliente
-	client = new LanguageClient(
-		'jspLanguageServer',
-		'JSP Language Server',
-		serverOptions,
-		clientOptions
-	);
-
-	// Iniciar el cliente y esperar a que esté listo
-	await client.start();
-
-	// Registrar el comando Go to Definition
-	let disposable = vscode.commands.registerCommand('jsp-support.goToJavaDefinition', async () => {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			return;
-		}
-
-		if (!client || !client.isRunning()) {
-			vscode.window.showErrorMessage('JSP language server is not active.');
-			return;
-		}
-
-		const position = editor.selection.active;
-		const document = editor.document;
-
-		try {
-			// Solicitar la definición al servidor de lenguaje
-			const locations = await client.sendRequest('textDocument/definition', {
-				textDocument: { uri: document.uri.toString() },
-				position: { line: position.line, character: position.character }
-			});
-
-			if (locations && Array.isArray(locations) && locations.length > 0) {
-				const location = locations[0] as Location;
-				const uri = vscode.Uri.parse(location.uri);
-				const range = new vscode.Range(
-					new vscode.Position(location.range.start.line, location.range.start.character),
-					new vscode.Position(location.range.end.line, location.range.end.character)
-				);
-
-				// Abrir el archivo y mostrar la definición
-				await vscode.window.showTextDocument(uri, { selection: range });
-			} else if (locations && !Array.isArray(locations)) {
-				const location = locations as Location;
-				const uri = vscode.Uri.parse(location.uri);
-				const range = new vscode.Range(
-					new vscode.Position(location.range.start.line, location.range.start.character),
-					new vscode.Position(location.range.end.line, location.range.end.character)
-				);
-
-				// Abrir el archivo y mostrar la definición
-				await vscode.window.showTextDocument(uri, { selection: range });
-			} else {
-				vscode.window.showInformationMessage('Java class definition not found.');
-			}
-		} catch (error) {
-			console.error('Error in Go to Definition:', error);
-			vscode.window.showErrorMessage(`Error searching for definition: ${error instanceof Error ? error.message : String(error)}`);
-		}
-	});
-
-	// Registrar proveedores de funcionalidades
-	context.subscriptions.push(
-		vscode.languages.registerCompletionItemProvider('jsp', {
-			provideCompletionItems(document: vscode.TextDocument, position: vscode.Position) {
-				const linePrefix = document.lineAt(position).text.substr(0, position.character);
-				
-				// Autocompletado básico para directivas JSP
-				if (linePrefix.endsWith('<%@')) {
-					return [
-						new vscode.CompletionItem('page', vscode.CompletionItemKind.Keyword),
-						new vscode.CompletionItem('include', vscode.CompletionItemKind.Keyword),
-						new vscode.CompletionItem('taglib', vscode.CompletionItemKind.Keyword)
-					];
-				}
-
-				// Autocompletado para atributos de directiva page
-				if (linePrefix.includes('<%@ page')) {
-					return [
-						new vscode.CompletionItem('language="java"', vscode.CompletionItemKind.Property),
-						new vscode.CompletionItem('contentType="text/html; charset=UTF-8"', vscode.CompletionItemKind.Property),
-						new vscode.CompletionItem('pageEncoding="UTF-8"', vscode.CompletionItemKind.Property),
-						new vscode.CompletionItem('import=""', vscode.CompletionItemKind.Property),
-						new vscode.CompletionItem('session="true"', vscode.CompletionItemKind.Property)
-					];
-				}
-
-				return undefined;
-			}
-		}, '@', '<')
-	);
-
-	context.subscriptions.push(disposable);
+    context.subscriptions.push(
+        support,
+        vscode.languages.registerDefinitionProvider(SELECTOR, new JspDefinitionProvider(support)),
+        vscode.languages.registerCompletionItemProvider(SELECTOR, new JspCompletionProvider(support), '@', '<', ':'),
+        // Read-only view of sources inside jars / src.zip (fallback when jdt.ls is absent).
+        vscode.workspace.registerTextDocumentContentProvider(JAR_SCHEME, {
+            async provideTextDocumentContent(uri) {
+                const zip = await ZipFile.open(uri.query);
+                return (await zip.readText(uri.path.replace(/^\//, ''))) ?? '';
+            },
+        }),
+        vscode.commands.registerCommand('jsp-support.goToJavaDefinition', () =>
+            vscode.commands.executeCommand('editor.action.revealDefinition')),
+        vscode.commands.registerCommand('jsp-support.showLog', () => support.log.show()),
+    );
 }
 
-// This method is called when your extension is deactivated
-export async function deactivate(): Promise<void> {
-	if (client) {
-		return client.stop();
-	}
-}
+export function deactivate(): void { /* disposables handle cleanup */ }

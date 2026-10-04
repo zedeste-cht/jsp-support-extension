@@ -1,115 +1,120 @@
 # JSP Language Support
 
-This extension provides complete support for JavaServer Pages (JSP) files in Visual Studio Code.
+JavaServer Pages (JSP) support for Visual Studio Code: syntax highlighting, snippets, completion, and
+**Go to Definition from JSP into Java and JavaScript** — across Maven/Gradle multi-module projects,
+Maven dependencies, self-packaged jars and the JDK.
 
-## Notes
+Based on the original work [jeromyu2023/vscode-jsp-support](https://github.com/jeromyu2023/vscode-jsp-support).
 
-This project is based on the original work: [jeromyu2023/vscode-jsp-support](https://github.com/jeromyu2023/vscode-jsp-support).
+## Go to Definition
 
-Because of a path issue, this repository was cloned and modified for further adjustments.
+Press <kbd>F12</kbd> / <kbd>Ctrl</kbd>+click in a `.jsp` / `.jspf` / `.jspx` file.
 
-## Features
+### Java (scriptlets, expressions, declarations, attributes)
 
-### Syntax Highlighting
-- JSP Directives (`<%@ ... %>`)
-- Scriptlets (`<% ... %>`)
-- Expressions (`<%= ... %>`)
-- Declarations (`<%! ... %>`4
-- JSP Standard Actions (`<jsp:include>`, `<jsp:param>`, etc.)
-- Embedded HTML and Java
+```jsp
+<%@ page import="com.acme.UserService, java.util.*" %>
+<jsp:useBean id="bean" class="com.acme.User"/>
+<%!
+    private String greet(String n) { return "hi " + n; }   // ← greet(...) jumps here
+%>
+<%
+    UserService svc = new UserService();                    // class → UserService.java
+    List<User> users = svc.findAll();
+    users.get(0).getAddress().getCity();                    // generics + method chains
+    for (Map.Entry<String, User> e : map.entrySet()) {
+        e.getValue().getName();                             // Map.Entry<K,V> type arguments
+    }
+    request.getSession().getAttribute("x");                 // implicit objects → servlet-api
+    StringUtils.isBlank(name);                              // Maven dependency jar (sources or decompiled)
+%>
+<%= greet(bean.getName()) %>
+```
 
-### Go to Definition
-- Navigate to Java class definitions from JSP files
-- Supports both JSP and Java import styles:
-  ```jsp
-  <%@page import="com.example.MyClass"%>  // JSP import
-  <%
-    import com.example.OtherClass;        // Java import
-    MyClass instance = new MyClass();     // Go to definition works here
-  %>
-  ```
-- Works with:
-  - Class references in code
-  - Import statements
-  - Fully qualified and simple class names
-  - Classes in different package structures
+Understands local variables (including `var`, for-each, catch, lambdas), `<%! %>` fields and methods,
+`<jsp:useBean>`, implicit objects (`request`, `session`, `out`, `application`, `pageContext`, …; javax and
+jakarta), imports (single, wildcard, `java.lang`), nested types, static members, enum constants,
+overloads by argument count, inherited members and generic type arguments through the type hierarchy.
+Blocks that span several scriptlets (`<% for (...) { %> … <% } %>`) are handled as one program.
 
-### Autocompletion
-- JSP Directives (page, include, taglib)
-- Common Directive Attributes
-- JSP Standard Actions
-- Basic JSTL Tags
+### JavaScript
 
-### Snippets
-- Basic JSP Template
-- Common Directives
-- JSP Standard Actions
-- JSP Code Blocks
-- JSTL Imports
+- Functions and methods defined in the same page, in `<script src="…">` files, and in pages pulled in with
+  `<%@ include %>` / `<jsp:include>` — resolved with the TypeScript language service (object literal
+  methods, prototypes, classes, arrow functions).
+- Works from `<script>` blocks and from inline handlers (`onclick="save()"`, `href="javascript:…"`).
+- Falls back to a workspace-wide search of function definitions in the module's webapp folders.
 
-## Usage
+### Files
 
-The extension is automatically activated for files with `.jsp`, `.jspx`, and `.jspf` extensions.
+`<%@ include file>`, `<jsp:include page>` and `<script src>` open the referenced file. Paths are resolved
+against the JSP's webapp root (the folder containing `WEB-INF`, `warSourceDirectory`, `src/main/webapp`, …)
+and understand `${pageContext.request.contextPath}`, `<%=request.getContextPath()%>` and `<c:url value>`.
 
-### Available Snippets
+## Multi-module projects and jars
 
-- `page` - Page directive with common attributes
-- `include` - Include directive
-- `taglib` - Taglib directive for JSTL
-- `jsp:include` - JSP include action
-- `jsp:include-params` - Include action with parameters
-- `jsp:param` - JSP parameter
-- `jsp:useBean` - UseBean action
-- `jsp:setProperty` - SetProperty action
-- `jsp:getProperty` - GetProperty action
-- `scriptlet` - Scriptlet block
-- `expr` - JSP expression
-- `decl` - JSP declaration
-- `comment` - JSP comment
+- **Maven**: every `pom.xml` in the workspace is a module (custom `<sourceDirectory>`, `warSourceDirectory`,
+  parent inheritance, properties, `dependencyManagement` and imported BOMs).
+- **Gradle**: every `build.gradle(.kts)` is a module (conventional `src/main/java`, `src/main/webapp`,
+  `project(':x')` dependencies).
+- A JSP looks up classes in **its own module first, then the modules it depends on**, so identical class
+  names in different modules resolve correctly.
 
-## Requirements
+### With the Red Hat Java extension (recommended)
 
-There are no special requirements to use this extension.
+If [Language Support for Java by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.java)
+is installed, type lookup is delegated to it (jdt.ls). That gives you the exact Maven/Gradle classpath
+(transitive dependencies, `system` scope, installed self-built jars), sources jars, **decompiled classes
+when no sources are available**, and JDK sources.
 
-## Extension Settings
+### Without it
 
-This extension contributes the following settings:
+A built-in index is used: module sources, `-sources.jar` (or jars that contain `.java` files) of the Maven
+dependencies resolved from your poms (including transitive ones), `system`-scope jars, `WEB-INF/lib/*.jar`
+and `lib/*.jar` (with a sibling `-sources.jar`), and the JDK `src.zip`. Jar sources open read-only.
+Classes without sources cannot be shown in this mode.
 
-* `jsp-support.javaSourcePaths`: Array of relative paths to search for Java source files within workspace folders. Defaults to `["src/main/java"]`. The extension also automatically detects source directories from `pom.xml` files.
+## Settings
 
-## Known Issues
+| Setting | Description |
+|---|---|
+| `jsp-support.javaSourcePaths` | Extra Java source folders (relative to each module) to search. |
+| `jsp-support.javaHome` | JDK used for `src.zip` when jdt.ls is not available. Falls back to `java.jdt.ls.java.home`, the default `java.configuration.runtimes` entry and `JAVA_HOME`. |
+| `jsp-support.mavenRepository` | Local Maven repository. Defaults to `<localRepository>` in `~/.m2/settings.xml`, then `~/.m2/repository`. |
 
-Please report any issues on the GitHub repository.
+Run **JSP: Show Log** to see the detected modules and per-lookup timings.
 
-## Release Notes
+## Other features
 
-### 0.0.5
+- Syntax highlighting for directives, scriptlets, expressions, declarations, actions, embedded HTML/Java/JS/CSS
+- Completion for directives, `page` attributes, JSP actions and HTML
+- Snippets: `page`, `include`, `taglib`, `jsp:include`, `jsp:include-params`, `jsp:param`, `jsp:useBean`,
+  `jsp:setProperty`, `jsp:getProperty`, `scriptlet`, `expr`, `decl`, `comment`
 
-Enhanced Maven multi-module project support:
-- Automatic detection and parsing of `<modules>` in parent `pom.xml` files
-- Recursive collection of Java source paths from all sub-modules in multi-module Maven projects
-- Module-aware Go to Definition: prioritizes searching in the module containing the current JSP file
-- Improved accuracy for class and method navigation in complex project structures
+## Development
 
-### 0.0.4
+```bash
+npm install
+npm test                        # unit tests (parser, resolver, Maven model, jar index, JS)
+npx vscode-test --label index   # VS Code integration tests against ../jsptest (built-in index)
+# jdt.ls integration tests against test-fixtures/maven-multi:
+JAVA_HOME=<jdk> JSP_TEST_EXTENSIONS_DIR=<folder containing redhat.java> npx vscode-test --label jdt
+```
 
-Enhanced Java class navigation:
-- Added configurable Java source paths via VS Code settings (`jsp-support.javaSourcePaths`)
-- Automatic detection of source directories from `pom.xml` `<sourceDirectory>` configuration
-- Support for complex multi-module Maven projects with custom directory structures
-- Improved compatibility with non-standard Maven project layouts
+Architecture (all in `src/`):
 
-### 0.0.1
-
-Initial release with basic JSP support:
-- Syntax highlighting
-- Autocompletion
-- Snippets
-- Support for JSP standard actions
-- Go to Definition for Java classes
+| Path | Role |
+|---|---|
+| `jsp/jspParser.ts` | JSP tokenizer: regions, directives, imports, includes, useBeans, scripts, handlers |
+| `jsp/virtualJava.ts` | Builds a servlet-like Java source from the page, with offset mapping |
+| `jsp/virtualJs.ts` | Same-length JS projection of the page |
+| `java/javaModel.ts` | tree-sitter based Java declaration model |
+| `java/javaResolver.ts` | Expression typing and definition resolution |
+| `java/classRepository.ts` | FQN → source via locators, with caching |
+| `locators/` | jdt.ls locator and the built-in source/jar index |
+| `project/` | Maven POM model and the workspace module model |
+| `js/jsService.ts` | TypeScript language service for JS definitions |
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-**Enjoy!**
+MIT – see [LICENSE](LICENSE).

@@ -1,8 +1,8 @@
 {
   "name": "support-jsp",
   "displayName": "JSP Support for vscode",
-  "description": "JSP Language Support for Visual Studio Code clone by jeromyu2023 vscode-jsp-support",
-  "version": "0.0.5",
+  "description": "JSP language support: go to Java/JavaScript definitions across Maven/Gradle multi-module projects and jars",
+  "version": "0.1.0",
   "publisher": "zedeste",
   "icon": "icon.png",
   "author": {
@@ -65,7 +65,13 @@
     "commands": [
       {
         "command": "jsp-support.goToJavaDefinition",
-        "title": "Go to Java Definition"
+        "title": "Go to Java Definition",
+        "category": "JSP"
+      },
+      {
+        "command": "jsp-support.showLog",
+        "title": "Show Log",
+        "category": "JSP"
       }
     ],
     "menus": {
@@ -86,17 +92,17 @@
             "type": "string"
           },
           "default": [],
-          "description": "List of relative paths to search for Java source files within workspace folders."
+          "description": "Extra Java source folders (relative to each module/workspace folder) to search, in addition to those detected from pom.xml / build.gradle."
         },
         "jsp-support.javaHome": {
           "type": "string",
           "default": "",
-          "description": "Path to JAVA_HOME for JDK source navigation (src.zip). Falls back to JAVA_HOME environment variable."
+          "description": "JDK home used to find src.zip when jdt.ls is not available. Falls back to java.jdt.ls.java.home, the default java.configuration.runtimes entry and JAVA_HOME."
         },
         "jsp-support.mavenRepository": {
           "type": "string",
           "default": "",
-          "description": "Path to local Maven repository. Defaults to ~/.m2/repository."
+          "description": "Local Maven repository. Defaults to <localRepository> from ~/.m2/settings.xml, then ~/.m2/repository."
         }
       }
     }
@@ -110,13 +116,14 @@
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "npm run test:unit",
+    "test:unit": "node esbuild.js && tsc -p . --outDir out && mocha \"out/test/unit/**/*.test.js\"",
+    "test:vscode": "vscode-test"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.7",
+    "@types/adm-zip": "^0.5.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "^1.102.0",
@@ -124,28 +131,14 @@
     "@typescript-eslint/parser": "^8.25.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
+    "adm-zip": "^0.5.16",
     "esbuild": "^0.25.0",
     "eslint": "^9.21.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
     "vscode-html-languageservice": "^5.1.0",
-    "vscode-languageclient": "^9.0.1",
-    "vscode-languageserver": "^9.0.1",
-    "vscode-languageserver-textdocument": "^1.0.11"
-  },
-  "bundledDependencies": [
-    "vscode-languageserver",
-    "vscode-languageserver-textdocument",
-    "vscode-html-languageservice",
-    "adm-zip"
-  ],
-  "bundleDependencies": [
-    "vscode-languageserver",
-    "vscode-languageserver-textdocument",
-    "vscode-html-languageservice",
-    "adm-zip"
-  ]
+    "web-tree-sitter": "^0.25.10"
+  }
 }
